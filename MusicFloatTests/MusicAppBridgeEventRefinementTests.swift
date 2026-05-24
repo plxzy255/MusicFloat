@@ -3,6 +3,19 @@ import XCTest
 
 @MainActor
 final class MusicAppBridgeEventRefinementTests: XCTestCase {
+    func testPlayerInfoNSNumberPersistentIDMatchesAppleScriptHexID() {
+        let event = AppleMusicEventListener.makeEvent(userInfo: [
+            "Player State": "Playing",
+            "Name": "Space Cowboy",
+            "Artist": "ZillaKami",
+            "Album": "DOG BOY",
+            "Total Time": 143_965,
+            "PersistentID": NSNumber(value: UInt64(2_142_536_473_224_030_779))
+        ])!
+
+        XCTAssertEqual(event.state.track?.id, "1DBBD1921CD62A3B")
+    }
+
     func testPausedSameTrackEventWithoutPositionPreservesElapsed() {
         let now = Date()
         let previous = PlayerState(

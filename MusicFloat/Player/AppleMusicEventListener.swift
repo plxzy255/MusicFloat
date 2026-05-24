@@ -96,7 +96,9 @@ enum AppleMusicEventListener {
         let duration = totalTimeMs / 1000.0
 
         let persistentID: String = {
-            if let v = info["PersistentID"] as? NSNumber { return v.stringValue }
+            if let v = info["PersistentID"] as? NSNumber {
+                return String(v.uint64Value, radix: 16).uppercased()
+            }
             if let v = info["Persistent ID"] as? String { return v }
             return "\(artist)|\(album)|\(title)"
         }()
