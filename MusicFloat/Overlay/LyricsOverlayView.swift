@@ -85,34 +85,37 @@ struct LyricsOverlayView: View {
             at: snapshot.effectiveLyricTime
         )
 
-        return activeLine.syllables.indices.reduce(Text("")) { text, index in
-            text + styledSyllable(activeLine.syllables[index], index: index, activeIndex: activeIndex)
-        }
+        return Text(styledSyllables(activeLine.syllables, activeIndex: activeIndex))
     }
 
-    private func styledSyllable(
-        _ syllable: LyricSyllable,
-        index: Int,
+    private func styledSyllables(
+        _ syllables: [LyricSyllable],
         activeIndex: Int?
-    ) -> Text {
-        guard let activeIndex else {
-            return Text(syllable.text)
-                .foregroundStyle(.secondary)
+    ) -> AttributedString {
+        var text = AttributedString()
+
+        for index in syllables.indices {
+            var segment = AttributedString(syllables[index].text)
+
+            guard let activeIndex else {
+                segment.foregroundColor = .secondary
+                text += segment
+                continue
+            }
+
+            if index < activeIndex {
+                segment.foregroundColor = .primary.opacity(0.62)
+            } else if index == activeIndex {
+                segment.foregroundColor = .primary
+                segment.inlinePresentationIntent = .stronglyEmphasized
+            } else {
+                segment.foregroundColor = .secondary
+            }
+
+            text += segment
         }
 
-        if index < activeIndex {
-            return Text(syllable.text)
-                .foregroundStyle(.primary.opacity(0.62))
-        }
-
-        if index == activeIndex {
-            return Text(syllable.text)
-                .foregroundStyle(.primary)
-                .bold()
-        }
-
-        return Text(syllable.text)
-            .foregroundStyle(.secondary)
+        return text
     }
 }
 
