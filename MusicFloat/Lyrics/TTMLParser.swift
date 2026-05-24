@@ -49,6 +49,16 @@ enum TTMLParser {
         }
     }
 
+    static func languageTag(in ttml: String) -> String? {
+        guard let data = ttml.data(using: .utf8) else { return nil }
+        let delegate = LanguageDelegate()
+        let parser = XMLParser(data: data)
+        unsafe parser.delegate = delegate
+        parser.shouldProcessNamespaces = false
+        _ = parser.parse()
+        return delegate.language
+    }
+
     private final class Delegate: NSObject, XMLParserDelegate {
         var lines: [LyricLine] = []
 
@@ -150,6 +160,29 @@ enum TTMLParser {
             default:
                 break
             }
+        }
+
+        private func localName(_ qualified: String) -> String {
+            if let colon = qualified.firstIndex(of: ":") {
+                return String(qualified[qualified.index(after: colon)...])
+            }
+            return qualified
+        }
+    }
+
+    private final class LanguageDelegate: NSObject, XMLParserDelegate {
+        var language: String?
+
+        func parser(
+            _ parser: XMLParser,
+            didStartElement elementName: String,
+            namespaceURI: String?,
+            qualifiedName qName: String?,
+            attributes attributeDict: [String: String] = [:]
+        ) {
+            guard localName(elementName) == "tt" else { return }
+            language = attributeDict["xml:lang"] ?? attributeDict["lang"]
+            parser.abortParsing()
         }
 
         private func localName(_ qualified: String) -> String {
