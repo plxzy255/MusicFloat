@@ -16,6 +16,32 @@ final class MusicAppBridgeEventRefinementTests: XCTestCase {
         XCTAssertEqual(event.state.track?.id, "1DBBD1921CD62A3B")
     }
 
+    func testPlayerInfoNSNumberPersistentIDPadsLeadingZeros() {
+        let event = AppleMusicEventListener.makeEvent(userInfo: [
+            "Player State": "Playing",
+            "Name": "Song",
+            "Artist": "Artist",
+            "Album": "Album",
+            "Total Time": 180_000,
+            "PersistentID": NSNumber(value: UInt64(0xABC))
+        ])!
+
+        XCTAssertEqual(event.state.track?.id, "0000000000000ABC")
+    }
+
+    func testPlayerInfoStringPersistentIDNormalizesToCanonicalHexID() {
+        let event = AppleMusicEventListener.makeEvent(userInfo: [
+            "Player State": "Playing",
+            "Name": "Song",
+            "Artist": "Artist",
+            "Album": "Album",
+            "Total Time": 180_000,
+            "Persistent ID": "abc"
+        ])!
+
+        XCTAssertEqual(event.state.track?.id, "0000000000000ABC")
+    }
+
     func testPausedSameTrackEventWithoutPositionPreservesElapsed() {
         let now = Date()
         let previous = PlayerState(
@@ -103,6 +129,64 @@ final class MusicAppBridgeEventRefinementTests: XCTestCase {
         XCTAssertNil(refined.state.track)
         XCTAssertEqual(refined.state.elapsedTime, 0)
         XCTAssertTrue(refined.refineSucceeded)
+    }
+
+    func testPausedEmptyPlayerInfoUsesConfirmedDisconnectedSnapshot() {
+        let now = Date()
+        let previous = PlayerState(
+            playbackStatus: .playing,
+            track: Self.track(id: "track-1"),
+            elapsedTime: 72,
+            updatedAt: now.addingTimeInterval(-2)
+        )
+        let event = PlayerState(
+            playbackStatus: .paused,
+            track: nil,
+            elapsedTime: 0,
+            updatedAt: now
+        )
+
+        let refined = PublicAppleMusicAppBridge.refinePlayerInfoEvent(
+            event: event,
+            lastEmittedState: previous,
+            lastEmittedAt: now.addingTimeInterval(-2),
+            snapshot: .disconnected,
+            now: now
+        )
+
+        XCTAssertEqual(refined.state.playbackStatus, .stopped)
+        XCTAssertNil(refined.state.track)
+        XCTAssertEqual(refined.state.elapsedTime, 0)
+        XCTAssertTrue(refined.refineSucceeded)
+    }
+
+    func testStoppedEmptyPlayerInfoWithoutSnapshotEmitsDisconnected() {
+        let now = Date()
+        let previous = PlayerState(
+            playbackStatus: .playing,
+            track: Self.track(id: "track-1"),
+            elapsedTime: 72,
+            updatedAt: now.addingTimeInterval(-2)
+        )
+        let event = PlayerState(
+            playbackStatus: .stopped,
+            track: nil,
+            elapsedTime: 0,
+            updatedAt: now
+        )
+
+        let refined = PublicAppleMusicAppBridge.refinePlayerInfoEvent(
+            event: event,
+            lastEmittedState: previous,
+            lastEmittedAt: now.addingTimeInterval(-2),
+            snapshot: nil,
+            isMusicAppRunning: false,
+            now: now
+        )
+
+        XCTAssertEqual(refined.state.playbackStatus, .stopped)
+        XCTAssertNil(refined.state.track)
+        XCTAssertEqual(refined.state.elapsedTime, 0)
     }
 
     func testResumeAfterPauseWithoutSnapshotStartsFromPreservedElapsed() {

@@ -97,9 +97,11 @@ enum AppleMusicEventListener {
 
         let persistentID: String = {
             if let v = info["PersistentID"] as? NSNumber {
-                return String(v.uint64Value, radix: 16).uppercased()
+                return canonicalPersistentID(v.uint64Value)
             }
-            if let v = info["Persistent ID"] as? String { return v }
+            if let v = info["Persistent ID"] as? String {
+                return canonicalPersistentID(v) ?? v
+            }
             return "\(artist)|\(album)|\(title)"
         }()
         let rawSummary = [
@@ -129,5 +131,21 @@ enum AppleMusicEventListener {
             updatedAt: Date()
         )
         return PlayerInfoEvent(state: state, rawSummary: rawSummary)
+    }
+
+    nonisolated static func canonicalPersistentID(_ value: UInt64) -> String {
+        String(format: "%016llX", value)
+    }
+
+    nonisolated static func canonicalPersistentID(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let hexCharacterSet = CharacterSet(charactersIn: "0123456789abcdefABCDEF")
+        guard trimmed.unicodeScalars.allSatisfy({ hexCharacterSet.contains($0) }),
+              trimmed.count <= 16,
+              let value = UInt64(trimmed, radix: 16) else {
+            return nil
+        }
+        return canonicalPersistentID(value)
     }
 }

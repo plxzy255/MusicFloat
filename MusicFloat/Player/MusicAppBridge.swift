@@ -122,6 +122,7 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
                         lastEmittedState: lastEmittedState,
                         lastEmittedAt: lastEmittedAt,
                         snapshot: matchingSnapshot,
+                        isMusicAppRunning: AppleMusicEventListener.isMusicAppRunning,
                         now: Date()
                     )
                     let refined = refinedEvent.state
@@ -145,10 +146,11 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
         lastEmittedState: PlayerState?,
         lastEmittedAt: Date,
         snapshot: PlayerState?,
+        isMusicAppRunning: Bool = true,
         now: Date
     ) -> RefinedPlayerInfoEvent {
         if let snapshot {
-            if event.playbackStatus == .stopped, event.track == nil, snapshot.track == nil {
+            if snapshot.track == nil || snapshot.playbackStatus == .stopped {
                 return RefinedPlayerInfoEvent(state: .disconnected, refineSucceeded: true)
             }
             return RefinedPlayerInfoEvent(
@@ -160,6 +162,10 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
                 ),
                 refineSucceeded: true
             )
+        }
+
+        if event.track == nil, event.playbackStatus == .stopped {
+            return RefinedPlayerInfoEvent(state: .disconnected, refineSucceeded: !isMusicAppRunning)
         }
 
         guard let lastEmittedState,
@@ -180,10 +186,6 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
                 ),
                 refineSucceeded: false
             )
-        }
-
-        if event.track == nil, event.playbackStatus == .stopped {
-            return RefinedPlayerInfoEvent(state: lastEmittedState, refineSucceeded: false)
         }
 
         guard sameTrackEvent else {
