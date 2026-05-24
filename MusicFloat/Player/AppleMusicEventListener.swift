@@ -15,9 +15,29 @@ enum AppleMusicEventListener {
     private static let bundleIdentifier = "com.apple.Music"
     nonisolated static let providerName = "Apple Music"
 
+    struct PlayerInfoEvent: Sendable {
+        let state: PlayerState
+        let rawSummary: String
+    }
+
     /// An async stream of player states derived from `playerInfo` notifications.
     /// The stream terminates when the consumer cancels.
     static func makeStream() -> AsyncStream<PlayerState> {
+        let eventStream = makePlayerInfoStream()
+        return AsyncStream(bufferingPolicy: .bufferingNewest(8)) { continuation in
+            let task = Task {
+                for await event in eventStream {
+                    continuation.yield(event.state)
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// An async stream of raw-enough playerInfo events for diagnostics plus the
+    /// parsed state used by production code.
+    static func makePlayerInfoStream() -> AsyncStream<PlayerInfoEvent> {
         AsyncStream(bufferingPolicy: .bufferingNewest(8)) { continuation in
             let center = DistributedNotificationCenter.default()
             let observer = center.addObserver(
@@ -25,8 +45,8 @@ enum AppleMusicEventListener {
                 object: nil,
                 queue: .main
             ) { note in
-                if let state = parse(note) {
-                    continuation.yield(state)
+                if let event = parse(note) {
+                    continuation.yield(event)
                 }
             }
 
@@ -53,7 +73,7 @@ enum AppleMusicEventListener {
 
     // MARK: - Parsing
 
-    nonisolated private static func parse(_ notification: Notification) -> PlayerState? {
+    nonisolated private static func parse(_ notification: Notification) -> PlayerInfoEvent? {
         let info = notification.userInfo ?? [:]
 
         let rawState = (info["Player State"] as? String) ?? "Stopped"
@@ -81,15 +101,24 @@ enum AppleMusicEventListener {
             if let v = info["Persistent ID"] as? String { return v }
             return "\(artist)|\(album)|\(title)"
         }()
+        let rawSummary = [
+            "state=\(rawState)",
+            "name=\(title)",
+            "artist=\(artist)",
+            "album=\(album)",
+            "durationMs=\(totalTimeMs)",
+            "persistentID=\(persistentID)"
+        ].joined(separator: " ")
 
         // No useful track payload and not playing → treat as disconnected.
         if title.isEmpty, status != .playing {
-            return PlayerState(
+            let state = PlayerState(
                 playbackStatus: .stopped,
                 track: nil,
                 elapsedTime: 0,
                 updatedAt: Date()
             )
+            return PlayerInfoEvent(state: state, rawSummary: rawSummary)
         }
 
         let track = title.isEmpty ? nil : NowPlayingTrack(
@@ -103,11 +132,12 @@ enum AppleMusicEventListener {
 
         // `playerInfo` does not include player position. Caller is expected to
         // refine elapsedTime via an on-demand AppleScript pull if needed.
-        return PlayerState(
+        let state = PlayerState(
             playbackStatus: status,
             track: track,
             elapsedTime: 0,
             updatedAt: Date()
         )
+        return PlayerInfoEvent(state: state, rawSummary: rawSummary)
     }
 }

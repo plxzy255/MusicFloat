@@ -7,11 +7,14 @@ final class PlayerController {
     /// How often we re-pull `player position` from Music.app while live and
     /// playing, to correct any drift that has accumulated since the last
     /// distributed-notification event.
-    private static let resyncInterval: TimeInterval = 2.0
+    private static let resyncInterval: TimeInterval = 1.0
     /// Threshold for snapping our interpolated elapsedTime to Music's
     /// authoritative position. Smaller deltas are ignored so jitter from
     /// AppleScript's coarse `player position` doesn't fight the smooth tick.
     private static let resyncSnapThreshold: TimeInterval = 0.35
+    /// Threshold for treating an elapsed-time jump as a user seek/scrub rather
+    /// than normal clock drift.
+    private static let seekDetectionThreshold: TimeInterval = 2.0
 
     private let bridge: any MusicAppBridge
     private var refreshTask: Task<Void, Never>?
@@ -61,16 +64,25 @@ final class PlayerController {
 
             for await state in bridge.events() {
                 if Task.isCancelled { break }
+                let previousTrackID = appState.playerState.track?.id
+                let incomingTrackID = state.track?.id
+                let isSameTrack = incomingTrackID != nil && incomingTrackID == previousTrackID
+                let eventDelta = state.elapsedTime - appState.playerState.elapsedTime
                 AppTelemetry.performance.info(
-                    "Live event: status=\(state.playbackStatus.rawValue, privacy: .public) hasTrack=\(state.track != nil) elapsed=\(state.elapsedTime)"
+                    "Live event: status=\(state.playbackStatus.rawValue, privacy: .public) trackID=\(incomingTrackID ?? "nil", privacy: .public) elapsed=\(state.elapsedTime) previousElapsed=\(appState.playerState.elapsedTime) delta=\(eventDelta)"
                 )
+                if isSameTrack, abs(eventDelta) > Self.seekDetectionThreshold {
+                    AppTelemetry.performance.info(
+                        "SEEK_DETECTED source=playerInfoEvent trackID=\(incomingTrackID ?? "nil", privacy: .public) previousElapsed=\(appState.playerState.elapsedTime) incomingElapsed=\(state.elapsedTime) delta=\(eventDelta)"
+                    )
+                }
                 appState.updatePlayerState(state)
                 if state.track?.id != lastTrackID {
                     lastTrackID = state.track?.id
                     onTrackChanged?(state.track)
                 }
                 // Re-sync tick to the fresh elapsedTime from the event so
-                // play/pause/skip doesn't leave the active line behind.
+                // play/pause/skip/seek doesn't leave the active line behind.
                 self.restartLiveTick(appState: appState, onLiveTick: onLiveTick)
             }
             _ = self
@@ -147,11 +159,13 @@ final class PlayerController {
                 let now = Date()
                 elapsed += now.timeIntervalSince(lastWall)
                 lastWall = now
+                AppTelemetry.performance.info(
+                    "Live tick localElapsed=\(elapsed) snapshotElapsed=nil delta=nil snap=false"
+                )
 
-                // Periodic resync against Music.app's authoritative position.
-                // When AppleScript has been failing, retry sooner (1s, 3s)
-                // instead of waiting the full 5s interval — drift compounds
-                // quickly if every refining call failed.
+                // Periodic watchdog against Music.app's authoritative position.
+                // While the overlay is visible this is frequent enough to catch
+                // seeks even if Music.app does not post a playerInfo event.
                 let resyncDue: TimeInterval = consecutiveResyncFailures > 0
                     ? min(Self.resyncInterval, 1.0 + Double(consecutiveResyncFailures) * 2.0)
                     : Self.resyncInterval
@@ -162,17 +176,32 @@ final class PlayerController {
                     if Task.isCancelled { return }
                     if snapshot.track != nil {
                         consecutiveResyncFailures = 0
-                        if snapshot.playbackStatus == .playing,
-                           snapshot.track?.id == appState.playerState.track?.id,
-                           abs(snapshot.elapsedTime - elapsed) >= Self.resyncSnapThreshold {
+                        let snapshotDelta = snapshot.elapsedTime - elapsed
+                        let isSameTrack = snapshot.track?.id == appState.playerState.track?.id
+                        let shouldSnap = snapshot.playbackStatus == .playing
+                            && isSameTrack
+                            && abs(snapshotDelta) >= Self.resyncSnapThreshold
+                        AppTelemetry.performance.info(
+                            "Live tick watchdog localElapsed=\(elapsed) snapshotElapsed=\(snapshot.elapsedTime) delta=\(snapshotDelta) sameTrack=\(isSameTrack) snap=\(shouldSnap)"
+                        )
+                        if shouldSnap {
+                            if abs(snapshotDelta) > Self.seekDetectionThreshold {
+                                AppTelemetry.performance.info(
+                                    "SEEK_DETECTED source=watchdog trackID=\(snapshot.track?.id ?? "nil", privacy: .public) localElapsed=\(elapsed) snapshotElapsed=\(snapshot.elapsedTime) delta=\(snapshotDelta)"
+                                )
+                                appState.updatePlayerState(snapshot)
+                            }
                             AppTelemetry.performance.info(
-                                "Live tick resync delta=\(snapshot.elapsedTime - elapsed) snap=true"
+                                "Live tick resync delta=\(snapshotDelta) snap=true"
                             )
                             elapsed = snapshot.elapsedTime
                             lastWall = Date()
                         }
                     } else {
                         consecutiveResyncFailures = min(consecutiveResyncFailures + 1, 5)
+                        AppTelemetry.performance.info(
+                            "Live tick watchdog snapshot missing failures=\(consecutiveResyncFailures)"
+                        )
                     }
                 }
 
