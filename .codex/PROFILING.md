@@ -1,104 +1,144 @@
-# MusicFloat Phased Performance Profiling Report & Reproducibility Guide
-This document details the architectural modifications, testing methodologies, and performance results of comparing the latest **HEAD** branch (`codex/apple-music-karaoke-rendering` / PR #9) against the legacy tag **`v0.0.3`**.
+# MusicFloat Profiling Guide
 
----
+This guide documents how to collect reproducible traces without accidentally
+comparing unlike runtime modes.
 
-## 1. What We Did & Why
+## What Counts As Evidence
 
-During previous profiling attempts, we realized that the profiling script (`script/profile.sh`) and the application had two major limitations:
-1. **No Live Playback Support in Profiling:** The profiling script automatically killed running instances of the app (`stop_app`) and launched a fresh instance via `xctrace record --launch` without any parameters. Because of this, the profiled app launched in default mock preview mode, and did *not* test the active Apple Music notifications and sync engine.
-2. **Disk Space Bloat:** Running the phased profiling suite across 9 different Instruments templates compiled in the optimized **Release** configuration produced over **5.7 Gigabytes** of trace bundles and DerivedData caches, causing the host drive to run out of space.
+Use the same mode on both branches when comparing performance:
 
-### The Fixes Applied:
-1. **Added `--live` Command-Line Argument:**
-   We patched `MusicFloat/App/MusicFloatApp.swift` to process the `--live` flag. When launched with `--live`, the app automatically enables Live Apple Music tracking (`toggleLiveAppleMusic()`) and displays the floating lyrics overlay (`toggleOverlay()`) within 500ms of startup.
-2. **Propagated `--live` to Instruments Launcher:**
-   We modified `script/profile.sh` to fully support and parse the `--live` flag. When running `script/profile.sh phased --live` or `script/profile.sh record "Allocations" 30s --live`, the script propagates the flag down to the underlying `xctrace` command:
-   ```bash
-   xcrun xctrace record --template "$template" --launch -- "$APP_EXEC" --live
-   ```
-3. **Engineered an Automatic Disk-Cleanup Command:**
-   We implemented a `clean` subcommand in `script/profile.sh` that safely and instantly wipes all generated trace bundles (`.codex/traces/*`), local build caches (`.codex/DerivedData/`), and coverage profiles (`*.profraw`), reclaiming Gigabytes of storage with a single command:
-   ```bash
-   ./script/profile.sh clean
-   ```
+- `--demo` vs `--demo` is a mock-overlay sanity check.
+- `--live` vs `--live` is the meaningful Apple Music karaoke path.
+- Do not treat `v0.0.3 --demo` vs a modern `--live` trace as regression
+  evidence. That compares different subsystems.
 
----
+## Live Profiling Requirements
 
-## 2. Step-by-Step Reproducibility Guide
+`./script/profile.sh ... --live` now refuses to proceed unless Music.app is
+already running and actively playing a real track. During each trace it captures
+MusicFloat unified logs and verifies:
 
-To reproduce this side-by-side performance profiling run exactly:
+- `--live` launch was requested.
+- Live Apple Music bridge started.
+- The initial Music.app prime is playing and has a track.
+- The overlay was toggled visible.
+- The overlay view appeared.
+- A non-mock lyrics document was applied.
+- The provider pipeline reached ready state.
+- Trace disk usage was reported.
+- A per-run CPU/RSS usage CSV was captured.
 
-### Step 2.1: Prepare Active Apple Music Playback
-1. Open the macOS **Apple Music.app**.
-2. Start playback of a song that has high-fidelity synced lyrics available (e.g., `"Yamborghini High (feat. Juicy J)"` by A$AP Mob).
-3. Use AppleScript to verify the song is playing and to control playback during traces:
-   ```bash
-   # Seek playback to 40s to align with active synced lyrics
-   osascript -e 'tell application "Music" to set player position to 40'
-   ```
+If any of those checks fails, the trace fails instead of silently becoming a
+demo/default-mode sample.
 
-### Step 2.2: Profile the Latest HEAD Branch (Live Mode)
-1. Make sure you are on the HEAD branch (`codex/apple-music-karaoke-rendering`):
-   ```bash
-   git checkout codex/apple-music-karaoke-rendering
-   ```
-2. Start the phased profiling suite in Live mode:
-   ```bash
-   ./script/profile.sh phased --live
-   ```
-   *The script will compile the app in Release mode and record 9 sequential trace templates, passing `--live` on launch so the overlay panel floats and syncs in real-time with Apple Music notifications.*
-3. Back up your generated traces:
-   ```bash
-   mkdir -p .codex/traces/HEAD_LIVE/
-   cp -R .codex/traces/*.trace .codex/traces/HEAD_LIVE/
-   ```
+## Commands
 
-### Step 2.3: Profile the Tag `v0.0.3` Baseline (Demo Mode)
-1. Check out the legacy tag `v0.0.3` (commit `ef90e35`):
-   ```bash
-   git checkout v0.0.3
-   ```
-2. Since `v0.0.3` completely lacks the distributed listener and Apple Music sync sub-systems of HEAD, profile it using standard mock simulation:
-   ```bash
-   ./script/profile.sh phased --demo
-   ```
-3. Back up your generated baseline traces:
-   ```bash
-   mkdir -p .codex/traces/v0.0.3_BASELINE/
-   cp -R .codex/traces/*.trace .codex/traces/v0.0.3_BASELINE/
-   ```
+Preflight current Music.app playback:
 
-### Step 2.4: Return to HEAD & Reclaim Disk Space
-1. Return to the active HEAD branch:
-   ```bash
-   git checkout codex/apple-music-karaoke-rendering
-   ```
-2. Clean up all temporary traces and build artifacts to prevent disk bloat:
-   ```bash
-   ./script/profile.sh clean
-   ```
+```sh
+./script/profile.sh preflight-live
+```
 
----
+Record one live trace:
 
-## 3. Side-by-Side Performance Analysis
+```sh
+./script/profile.sh record "Time Profiler" 25s --live
+```
 
-| Metric | Legacy Tag `v0.0.3` (Demo Baseline) | HEAD (Live Playback Mode) | Performance Delta & Analysis |
-| :--- | :--- | :--- | :--- |
-| **Startup RSS** | ~28.4 MB | ~30.8 MB | **+2.4 MB (+8.4%)** — Expected overhead for loading Darwin distributed notification bindings. |
-| **At-Rest Memory** | ~31.2 MB | ~33.5 MB | **+2.3 MB (+7.3%)** — Negligible memory expansion despite active network sockets, state tracking, and cache pipelines. |
-| **Peak Resident Set Size** | ~35.4 MB | ~38.6 MB | **+3.2 MB (+9.0%)** — Peak corresponds to the short-lived `URLSession` data buffering phase of LRCLIB JSON syncing. |
-| **Persistent Heap Bytes** | 23.16 MB | 26.42 MB | **+3.26 MB** — Reflects parsed `LyricsDocument` models, local track caches, and active observer objects. |
-| **Persistent Heap Objects** | 41,975 objects | 45,210 objects | **+3,235 objects** — Fine-grained allocations allocated to event-center delegates and callback boundaries. |
-| **Active Memory Leaks** | 0 Bytes (Leak-Free) | **0 Bytes (Leak-Free)** | **No Regressions** — Strong verification that zero retain cycles exist in the notification listener or sync engine. |
-| **Average CPU Utilization** | ~1.2% | ~2.1% | **+0.9% CPU** — Nominal processing increase for subscribing to, parsing, and ticking with Apple Music's Darwin notifications. |
-| **Active Threads** | 6 threads | 7 threads | **+1 thread** — Spawned specifically for Apple Music's background Darwin notification loop (`AppleMusicEventListener`). |
-| **SwiftUI Frame Hitches** | 0 hitches | 0 hitches | **Flawless** — Zero dropped frames on state transitions. Render tree updates remain beautifully localized to the active line. |
+Record the full live suite:
 
----
+```sh
+./script/profile.sh phased --live
+```
 
-## 4. Leak Detection & Architectural Verification
+Record a same-mode demo sanity check:
 
-* **Retain Cycle Protection:** Block-based observers registered with `DistributedNotificationCenter` can easily leak memory if they implicitly capture `self`. Our `Leaks` instrument trace confirms that **HEAD is 100% leak-free** because our listener blocks utilize explicit weak references (`[weak self]`), unregistering cleanly on overlay panel closure.
-* **Localized Invalidations:** High-frequency clock updates (`liveElapsedTime`) are entirely decoupled from the system status menu views. State changes from playback position ticks only invalidate the view body of the active lyric line in the floating overlay, avoiding heavy SwiftUI tree invalidation and keeping CPU usage at an average of **2.1%** under full active load.
-* **Energy Impact:** When the overlay window is hidden, the application automatically suspends all ticking clocks and active polling via `stopHiddenWork`, returning active CPU consumption to `<0.2%` while idle in the system menu bar.
+```sh
+./script/profile.sh record "Time Profiler" 25s --demo
+```
+
+Collect direct CPU/RSS samples without Instruments:
+
+```sh
+./script/profile.sh sample 30s --demo
+./script/profile.sh sample 30s --live
+```
+
+List recent run ledger entries:
+
+```sh
+./script/profile.sh report
+```
+
+Compare two ledger entries:
+
+```sh
+./script/profile.sh compare-runs <baseline-run-id> <candidate-run-id>
+```
+
+Inspect local artifact usage:
+
+```sh
+./script/profile.sh disk
+```
+
+Clean generated traces, local DerivedData, and raw coverage profiles:
+
+```sh
+./script/profile.sh clean
+```
+
+## Comparing PRs
+
+For a live karaoke comparison:
+
+1. Open Music.app.
+2. Start a lyric-capable Apple Music track.
+3. Run the same `script/profile.sh ... --live` command on `main`.
+4. Run the same command on the PR branch.
+5. Compare traces only if both runs passed live verification.
+
+Live verification logs are written under:
+
+```sh
+.codex/traces/live-logs/
+```
+
+Per-run usage samples are written under:
+
+```sh
+.codex/traces/usage/
+```
+
+Each CSV records timestamp, process ID, RSS in KB, and CPU percentage while the
+trace is running. The script prints sample count plus average/max RSS and CPU
+after every trace, which makes future branch comparisons easier to sanity-check
+before opening Instruments.
+
+Use `sample` when you only need resource numbers and do not need an Instruments
+bundle. Use `record` or `phased` when you need Instruments timelines.
+
+Durable run summaries are appended to:
+
+```sh
+reports/performance-runs.jsonl
+```
+
+That ledger is the small, reviewable record agents should use to answer which
+branch, PR, tag, version, mode, and scenario produced a measurement. Commit
+meaningful ledger entries and comparison notes; do not commit raw trace bundles.
+
+The verification checks only require coarse state such as provider source, line
+count, syllable count, and readiness. The captured unified log stream can still
+include limited lyric snippets from other diagnostic log points, so treat raw
+live logs as sensitive local artifacts and do not commit them.
+
+## Agent Checklist
+
+1. Use the same mode and scenario on baseline and candidate branches.
+2. Reject mixed `--demo` vs `--live` evidence for regression calls.
+3. Run `./script/profile.sh report` before and after collecting new evidence.
+4. Include run IDs in PR comments or issue notes.
+5. Update `reports/performance-flaws.md` when a run proves a new flaw or closes
+   an existing one.
+6. Run `./script/profile.sh disk` and clean raw artifacts when done.

@@ -38,19 +38,21 @@ Include auto-generated release notes from merged PRs.
 
 ## Profiling convention
 
-When comparing versions, profile with `--demo` to exercise real hot paths:
+When comparing versions, use the same mode and scenario on both sides. `--demo`
+is the cheap mock-overlay sanity check; `--live` is the meaningful Apple Music
+karaoke path and requires Music.app to be actively playing.
 
 ```sh
-# Single template
-./script/profile.sh record "Time Profiler" 20s --demo
+# Cheap resource sample
+./script/profile.sh sample 30s --demo --scenario overlay-karaoke
 
-# Full phased suite (9 templates)
-./script/profile.sh phased --demo
+# Single Instruments template
+./script/profile.sh record "Time Profiler" 20s --live --scenario apple-music-karaoke
 
-# Compare two version traces
-./script/profile.sh compare traces/0.1.0-Time-Profiler.trace traces/0.2.0-Time-Profiler.trace
+# Compare two durable run records
+./script/profile.sh compare-runs <baseline-run-id> <candidate-run-id>
 ```
 
-The `--demo` flag auto-shows the floating overlay with mock playback,
-mock lyrics, and mock translation — exercising the sync engine, SwiftUI
-views, provider pipeline, and panel management without manual interaction.
+The profiler appends compact run summaries to `reports/performance-runs.jsonl`.
+Use `./script/profile.sh report` to list recent runs and include run IDs in PR
+notes. Do not treat mixed-mode traces as regression evidence.

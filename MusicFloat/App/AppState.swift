@@ -343,6 +343,12 @@ final class AppState {
 
     func applyLyricsDocument(_ document: LyricsDocument) {
         lyricsDocument = document
+        let syllableCount = document.lines.reduce(0) { total, line in
+            total + line.syllables.count
+        }
+        AppTelemetry.performance.info(
+            "Lyrics document applied source=\(document.source.rawValue, privacy: .public) timed=\(document.isTimed) line_count=\(document.lines.count) syllable_count=\(syllableCount)"
+        )
     }
 
     func applyTranslation(_ translation: LyricTranslation) {
