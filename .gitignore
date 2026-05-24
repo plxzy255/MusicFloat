@@ -4,3 +4,12 @@
 .codex/traces/
 .agents/traces/
 dist/
+
+# Xcode per-user state
+**/xcuserdata/
+
+# Local scratch / reference material (third-party repos pulled for research)
+.tmp/
+
+# Stray conversation exports from unrelated tooling
+hermes_conversation_*.json

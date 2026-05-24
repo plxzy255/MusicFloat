@@ -34,4 +34,11 @@ nonisolated struct RuntimeFeatureFlags: Equatable, Sendable {
         translationProviderMode: .mock,
         allowsHiddenProviderRefresh: false
     )
+
+    static let liveAppleMusic = RuntimeFeatureFlags(
+        playerBridgeMode: .publicApple,
+        lyricsProviderMode: .publicApple,
+        translationProviderMode: .publicApple,
+        allowsHiddenProviderRefresh: false
+    )
 }

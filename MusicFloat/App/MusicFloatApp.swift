@@ -7,14 +7,20 @@ struct MusicFloatApp: App {
     @State private var appState = AppState()
     private let panelController = FloatingPanelController()
     private let playerController: PlayerController
-    private let providerPipelineController: ProviderPipelineController
+    private let mockProviderPipelineController: ProviderPipelineController
+    private let liveProviderPipelineController: ProviderPipelineController
 
     init() {
-        let adapters = RuntimeAdapterFactory.makeAdapters(for: RuntimeFeatureFlags.architectureDefault)
-        playerController = PlayerController(bridge: adapters.musicBridge)
-        providerPipelineController = ProviderPipelineController(
-            lyricsProvider: adapters.lyricsProvider,
-            translationProvider: adapters.translationProvider
+        let mockAdapters = RuntimeAdapterFactory.makeAdapters(for: .architectureDefault)
+        let liveAdapters = RuntimeAdapterFactory.makeAdapters(for: .liveAppleMusic)
+        playerController = PlayerController(bridge: mockAdapters.musicBridge)
+        mockProviderPipelineController = ProviderPipelineController(
+            lyricsProvider: mockAdapters.lyricsProvider,
+            translationProvider: mockAdapters.translationProvider
+        )
+        liveProviderPipelineController = ProviderPipelineController(
+            lyricsProvider: liveAdapters.lyricsProvider,
+            translationProvider: liveAdapters.translationProvider
         )
         AppTelemetry.lifecycle.info("MusicFloat app initialized")
     }
@@ -26,6 +32,9 @@ struct MusicFloatApp: App {
                 toggleOverlay: toggleOverlay,
                 toggleMockPreview: toggleMockPreview,
                 toggleLiveAppleMusic: toggleLiveAppleMusic,
+                nudgeLyricOffset: { [appState] delta in appState.nudgeLyricOffset(by: delta) },
+                resetLyricOffset: { [appState] in appState.resetLyricOffset() },
+                clearAllPerTrackOffsets: { [appState] in appState.clearAllPerTrackOffsets() },
                 resetMockPlayback: resetMockPlayback,
                 setOverlayContentState: setOverlayContentState,
                 quit: quit
@@ -43,13 +52,17 @@ struct MusicFloatApp: App {
         AppTelemetry.menuBar.info("Toggle overlay requested visible=\(self.appState.isOverlayVisible)")
 
         if appState.isOverlayVisible {
-            playerController.startMockPreview(appState: appState)
-            providerPipelineController.prepareOverlayContent(appState: appState)
+            if !appState.isLiveModeRunning {
+                playerController.startMockPreview(appState: appState)
+            }
+            activeProviderPipelineController.prepareOverlayContent(appState: appState)
             panelController.show(appState: appState)
+            playerController.overlayVisibilityChanged(true, appState: appState)
         } else {
-            providerPipelineController.stopHiddenWork(appState: appState)
+            mockProviderPipelineController.stopHiddenWork(appState: appState)
+            liveProviderPipelineController.stopHiddenWork(appState: appState)
             playerController.stopMockPreview(appState: appState)
-            playerController.stopLiveAppleMusic(appState: appState)
+            playerController.overlayVisibilityChanged(false, appState: appState)
             panelController.hide(releaseResources: appState.reduceHiddenMemoryUsage)
         }
     }
@@ -65,8 +78,25 @@ struct MusicFloatApp: App {
     private func toggleLiveAppleMusic() {
         if appState.isLiveModeRunning {
             playerController.stopLiveAppleMusic(appState: appState)
+            liveProviderPipelineController.stopHiddenWork(appState: appState)
+            appState.runtimeFeatureFlags = .architectureDefault
         } else {
-            playerController.startLiveAppleMusic(appState: appState)
+            appState.runtimeFeatureFlags = .liveAppleMusic
+            playerController.startLiveAppleMusic(appState: appState) { [appState, liveProviderPipelineController] track in
+                guard track != nil else {
+                    AppTelemetry.performance.info("Live track payload empty; preserving current lyrics state")
+                    liveProviderPipelineController.cancelInFlightLoadPreservingState()
+                    return
+                }
+                guard appState.isOverlayVisible || appState.runtimeFeatureFlags.allowsHiddenProviderRefresh else {
+                    liveProviderPipelineController.cancelInFlightLoadPreservingState()
+                    AppTelemetry.performance.info("Live track refresh deferred while overlay hidden")
+                    return
+                }
+                liveProviderPipelineController.refreshOverlayContent(appState: appState)
+            } onLiveTick: { [appState, liveProviderPipelineController] in
+                liveProviderPipelineController.refreshIntegratedVisibleLyrics(appState: appState)
+            }
         }
     }
 
@@ -80,10 +110,15 @@ struct MusicFloatApp: App {
 
     private func quit() {
         AppTelemetry.lifecycle.info("Quit requested from menu bar")
-        providerPipelineController.stopHiddenWork(appState: appState)
+        mockProviderPipelineController.stopHiddenWork(appState: appState)
+        liveProviderPipelineController.stopHiddenWork(appState: appState)
         playerController.stopMockPreview(appState: appState)
         playerController.stopLiveAppleMusic(appState: appState)
         panelController.hide()
         NSApplication.shared.terminate(nil)
+    }
+
+    private var activeProviderPipelineController: ProviderPipelineController {
+        appState.isLiveModeRunning ? liveProviderPipelineController : mockProviderPipelineController
     }
 }
