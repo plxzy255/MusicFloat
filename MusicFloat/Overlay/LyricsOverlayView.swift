@@ -77,7 +77,7 @@ struct LyricsOverlayView: View {
     private func lyricText(for snapshot: LyricsOverlaySnapshot) -> Text {
         guard let activeLine = snapshot.activeLine, !activeLine.syllables.isEmpty else {
             return Text(snapshot.lyricText)
-                .foregroundColor(.primary)
+                .foregroundStyle(.primary)
         }
 
         let activeIndex = LyricsOverlaySnapshotBuilder.activeSyllableIndex(
@@ -97,22 +97,22 @@ struct LyricsOverlayView: View {
     ) -> Text {
         guard let activeIndex else {
             return Text(syllable.text)
-                .foregroundColor(.secondary)
+                .foregroundStyle(.secondary)
         }
 
         if index < activeIndex {
             return Text(syllable.text)
-                .foregroundColor(.primary.opacity(0.62))
+                .foregroundStyle(.primary.opacity(0.62))
         }
 
         if index == activeIndex {
             return Text(syllable.text)
-                .foregroundColor(.primary)
+                .foregroundStyle(.primary)
                 .bold()
         }
 
         return Text(syllable.text)
-            .foregroundColor(.secondary)
+            .foregroundStyle(.secondary)
     }
 }
 
