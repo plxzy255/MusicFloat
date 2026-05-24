@@ -76,6 +76,181 @@ final class ProviderPipelineControllerTests: XCTestCase {
         XCTAssertTrue(ProviderPipelineController.skipsIntegratedVisibleLyricsRefresh(for: document))
     }
 
+    func testProviderPipelineAppliesLyricsReadyBeforeTranslationCompletes() async throws {
+        let defaults = UserDefaults(suiteName: "MusicFloatTests.lyricsBeforeTranslation.\(UUID().uuidString)")!
+        let appState = AppState(userDefaults: defaults)
+        appState.isOverlayVisible = true
+        appState.updatePlayerState(PlayerState(
+            playbackStatus: .playing,
+            track: NowPlayingTrack(
+                id: "track:ready",
+                title: "Ready",
+                artist: "MusicFloat",
+                album: "Tests",
+                duration: 180,
+                providerName: "Apple Music"
+            ),
+            elapsedTime: 0,
+            updatedAt: Date()
+        ))
+        let document = LyricsDocument(
+            source: .musicApp,
+            lines: [LyricLine(id: 0, text: "Lyrics are ready before translation", startTime: nil)],
+            isTimed: false,
+            sourceLanguageIdentifier: "en"
+        )
+        let translationStarted = expectation(description: "Translation started")
+        let translationProvider = ControllableTranslationProvider(started: translationStarted)
+        let controller = ProviderPipelineController(
+            lyricsProvider: ImmediateLyricsProvider(document: document),
+            translationProvider: translationProvider
+        )
+
+        controller.prepareOverlayContent(appState: appState)
+        await fulfillment(of: [translationStarted], timeout: 1.0)
+
+        XCTAssertEqual(appState.providerRuntimeState, .ready)
+        XCTAssertEqual(appState.overlayContentState, .ready)
+        XCTAssertEqual(appState.lyricsDocument, document)
+        XCTAssertNotEqual(appState.translationRuntimeState, .ready)
+        translationProvider.complete(with: .status(.unavailable(reason: "Test complete")))
+        controller.stopHiddenWork(appState: appState)
+    }
+
+    func testTargetLanguageChangeClearsStaleTranslation() {
+        let defaults = UserDefaults(suiteName: "MusicFloatTests.targetLanguageChange.\(UUID().uuidString)")!
+        let appState = AppState(userDefaults: defaults)
+        appState.applyTranslation(LyricTranslation(
+            targetLanguageIdentifier: "fr",
+            sourceLanguageIdentifier: "en",
+            lines: [TranslatedLyricLine(id: 0, sourceLineID: 0, text: "Bonjour")]
+        ))
+
+        let changed = appState.applyPreferences(
+            showsTranslation: true,
+            preferredTranslationLanguageIdentifier: "es",
+            overlayWidthPreset: .medium,
+            reduceHiddenMemoryUsage: true
+        )
+
+        XCTAssertTrue(changed)
+        XCTAssertEqual(appState.translation.lines, [])
+        XCTAssertEqual(appState.translation.targetLanguageIdentifier, "es")
+    }
+
+    func testTargetLanguageChangeCanStartFreshTranslation() async throws {
+        let defaults = UserDefaults(suiteName: "MusicFloatTests.targetLanguageRefresh.\(UUID().uuidString)")!
+        let appState = AppState(userDefaults: defaults)
+        appState.isOverlayVisible = true
+        appState.updatePlayerState(playerState(trackID: "track:language"))
+        appState.applyLyricsDocument(LyricsDocument(
+            source: .musicApp,
+            lines: [LyricLine(id: 0, text: "Translate me", startTime: nil)],
+            isTimed: false,
+            sourceLanguageIdentifier: "en"
+        ))
+        _ = appState.applyPreferences(
+            showsTranslation: true,
+            preferredTranslationLanguageIdentifier: "es",
+            overlayWidthPreset: .medium,
+            reduceHiddenMemoryUsage: true
+        )
+        let translationRequested = expectation(description: "Translation requested")
+        let translationProvider = RecordingTargetTranslationProvider(requested: translationRequested)
+        let controller = ProviderPipelineController(
+            lyricsProvider: RecordingLyricsProvider(),
+            translationProvider: translationProvider
+        )
+
+        controller.refreshTranslation(appState: appState)
+        await fulfillment(of: [translationRequested], timeout: 1.0)
+
+        XCTAssertEqual(translationProvider.requestedTargets, ["es"])
+    }
+
+    func testTranslationRefreshWaitsForCurrentLyricsLoad() async throws {
+        let defaults = UserDefaults(suiteName: "MusicFloatTests.translationRefreshDuringLyricsLoad.\(UUID().uuidString)")!
+        let appState = AppState(userDefaults: defaults)
+        appState.isOverlayVisible = true
+        appState.updatePlayerState(playerState(trackID: "track:loading"))
+        let loadedDocument = LyricsDocument(
+            source: .musicApp,
+            lines: [LyricLine(id: 0, text: "Fresh lyric", startTime: nil)],
+            isTimed: false,
+            sourceLanguageIdentifier: "en"
+        )
+        let lyricsStarted = expectation(description: "Lyrics load started")
+        let lyricsProvider = ControllableLyricsProvider(
+            document: loadedDocument,
+            started: lyricsStarted
+        )
+        let translationRequested = expectation(description: "Translation requested after lyrics load")
+        let translationProvider = RecordingTargetTranslationProvider(requested: translationRequested)
+        let controller = ProviderPipelineController(
+            lyricsProvider: lyricsProvider,
+            translationProvider: translationProvider
+        )
+
+        controller.prepareOverlayContent(appState: appState)
+        await fulfillment(of: [lyricsStarted], timeout: 1.0)
+        _ = appState.applyPreferences(
+            showsTranslation: true,
+            preferredTranslationLanguageIdentifier: "es",
+            overlayWidthPreset: .medium,
+            reduceHiddenMemoryUsage: true
+        )
+        controller.refreshTranslation(appState: appState)
+
+        XCTAssertEqual(translationProvider.requestedTargets, [])
+        XCTAssertEqual(
+            appState.translationRuntimeState,
+            .unavailable(reason: "Translation will wait for current lyrics")
+        )
+
+        lyricsProvider.complete()
+        await fulfillment(of: [translationRequested], timeout: 1.0)
+
+        XCTAssertEqual(appState.lyricsDocument, loadedDocument)
+        XCTAssertEqual(translationProvider.requestedTargets, ["es"])
+    }
+
+    func testTrackChangePreventsStaleTranslationFromApplying() async throws {
+        let defaults = UserDefaults(suiteName: "MusicFloatTests.staleTranslation.\(UUID().uuidString)")!
+        let appState = AppState(userDefaults: defaults)
+        appState.isOverlayVisible = true
+        appState.updatePlayerState(playerState(trackID: "track:old"))
+        let document = LyricsDocument(
+            source: .musicApp,
+            lines: [LyricLine(id: 0, text: "Old track lyric", startTime: nil)],
+            isTimed: false,
+            sourceLanguageIdentifier: "en"
+        )
+        let translationStarted = expectation(description: "Translation started")
+        let translationReturned = expectation(description: "Translation returned")
+        let translationProvider = ControllableTranslationProvider(
+            started: translationStarted,
+            returned: translationReturned
+        )
+        let controller = ProviderPipelineController(
+            lyricsProvider: ImmediateLyricsProvider(document: document),
+            translationProvider: translationProvider
+        )
+
+        controller.prepareOverlayContent(appState: appState)
+        await fulfillment(of: [translationStarted], timeout: 1.0)
+        appState.updatePlayerState(playerState(trackID: "track:new"))
+        translationProvider.complete(with: .available(LyricTranslation(
+            targetLanguageIdentifier: appState.preferredTranslationLanguageIdentifier,
+            sourceLanguageIdentifier: "en",
+            lines: [TranslatedLyricLine(id: 0, sourceLineID: 0, text: "Ancienne ligne")]
+        )))
+        await fulfillment(of: [translationReturned], timeout: 1.0)
+        await Task.yield()
+
+        XCTAssertEqual(appState.translation.lines, [])
+        XCTAssertNotEqual(appState.translationRuntimeState, .ready)
+    }
+
     private final class RecordingLyricsProvider: LyricsProvider {
         let displayName = "Recording lyrics provider"
         private(set) var requestedTrackIDs: [String] = []
@@ -86,11 +261,118 @@ final class ProviderPipelineControllerTests: XCTestCase {
         }
     }
 
+    private struct ImmediateLyricsProvider: LyricsProvider {
+        let displayName = "Immediate lyrics provider"
+        let document: LyricsDocument
+
+        func lyrics(for track: NowPlayingTrack) async -> LyricsProviderResult {
+            .available(document)
+        }
+    }
+
+    private final class ControllableLyricsProvider: LyricsProvider {
+        let displayName = "Controllable lyrics provider"
+        private let document: LyricsDocument
+        private let started: XCTestExpectation
+        private var continuation: CheckedContinuation<Void, Never>?
+
+        init(
+            document: LyricsDocument,
+            started: XCTestExpectation
+        ) {
+            self.document = document
+            self.started = started
+        }
+
+        func lyrics(for track: NowPlayingTrack) async -> LyricsProviderResult {
+            await withCheckedContinuation { continuation in
+                self.continuation = continuation
+                started.fulfill()
+            }
+            return .available(document)
+        }
+
+        func complete() {
+            continuation?.resume()
+            continuation = nil
+        }
+    }
+
     private struct RecordingTranslationProvider: TranslationProvider {
         let displayName = "Recording translation provider"
 
-        func translation(for document: LyricsDocument, targetLanguage: String) async -> TranslationProviderResult {
-            .unavailable
+        func translation(
+            for document: LyricsDocument,
+            targetLanguageIdentifier: String
+        ) async -> TranslationProviderResult {
+            .status(.unavailable(reason: "No translation"))
         }
+    }
+
+    private final class RecordingTargetTranslationProvider: TranslationProvider {
+        let displayName = "Recording target translation provider"
+        private let requested: XCTestExpectation
+        private(set) var requestedTargets: [String] = []
+
+        init(requested: XCTestExpectation) {
+            self.requested = requested
+        }
+
+        func translation(
+            for document: LyricsDocument,
+            targetLanguageIdentifier: String
+        ) async -> TranslationProviderResult {
+            requestedTargets.append(targetLanguageIdentifier)
+            requested.fulfill()
+            return .status(.unavailable(reason: "Recorded"))
+        }
+    }
+
+    private final class ControllableTranslationProvider: TranslationProvider {
+        let displayName = "Controllable translation provider"
+        private let started: XCTestExpectation
+        private let returned: XCTestExpectation?
+        private var continuation: CheckedContinuation<TranslationProviderResult, Never>?
+
+        init(
+            started: XCTestExpectation,
+            returned: XCTestExpectation? = nil
+        ) {
+            self.started = started
+            self.returned = returned
+        }
+
+        func translation(
+            for document: LyricsDocument,
+            targetLanguageIdentifier: String
+        ) async -> TranslationProviderResult {
+            let result = await withCheckedContinuation { continuation in
+                self.continuation = continuation
+                started.fulfill()
+            }
+            returned?.fulfill()
+            return result
+        }
+
+        func complete(with result: TranslationProviderResult) {
+            continuation?.resume(returning: result)
+            continuation = nil
+        }
+    }
+
+    private func playerState(trackID: String) -> PlayerState {
+        PlayerState(
+            playbackStatus: .playing,
+            track: NowPlayingTrack(
+                id: trackID,
+                title: "Track",
+                artist: "MusicFloat",
+                album: "Tests",
+                duration: 180,
+                providerName: "Apple Music"
+            ),
+            elapsedTime: 0,
+            updatedAt: Date()
+        )
     }
 }

@@ -25,7 +25,12 @@ enum TTMLParser {
             return nil
         }
         let isTimed = delegate.lines.contains { $0.startTime != nil }
-        return LyricsDocument(source: source, lines: delegate.lines, isTimed: isTimed)
+        return LyricsDocument(
+            source: source,
+            lines: delegate.lines,
+            isTimed: isTimed,
+            sourceLanguageIdentifier: delegate.language
+        )
     }
 
     static func parseTimecode(_ raw: String?) -> TimeInterval? {
@@ -61,6 +66,7 @@ enum TTMLParser {
 
     private final class Delegate: NSObject, XMLParserDelegate {
         var lines: [LyricLine] = []
+        var language: String?
 
         private var inP = false
         private var pBegin: TimeInterval?
@@ -84,6 +90,7 @@ enum TTMLParser {
             let name = localName(elementName)
             switch name {
             case "tt":
+                language = attributeDict["xml:lang"] ?? attributeDict["lang"]
                 timingMode = attributeDict["itunes:timing"] ?? attributeDict["timing"]
             case "p":
                 inP = true

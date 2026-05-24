@@ -58,7 +58,11 @@ struct MusicFloatApp: App {
         .menuBarExtraStyle(.menu)
 
         Settings {
-            SettingsView(appState: appState)
+            SettingsView(
+                appState: appState,
+                onTranslationPreferencesChanged: translationPreferencesChanged,
+                onTranslationPreparationCompleted: retryTranslationAfterPreparation
+            )
         }
     }
 
@@ -100,11 +104,11 @@ struct MusicFloatApp: App {
             playerController.startLiveAppleMusic(appState: appState) { [appState, liveProviderPipelineController] track in
                 guard track != nil else {
                     AppTelemetry.performance.info("Live track payload empty; preserving current lyrics state")
-                    liveProviderPipelineController.cancelInFlightLoadPreservingState()
+                    liveProviderPipelineController.cancelInFlightLoadPreservingState(appState: appState)
                     return
                 }
                 guard appState.isOverlayVisible || appState.runtimeFeatureFlags.allowsHiddenProviderRefresh else {
-                    liveProviderPipelineController.cancelInFlightLoadPreservingState()
+                    liveProviderPipelineController.cancelInFlightLoadPreservingState(appState: appState)
                     AppTelemetry.performance.info("Live track refresh deferred while overlay hidden")
                     return
                 }
@@ -121,6 +125,19 @@ struct MusicFloatApp: App {
 
     private func setOverlayContentState(_ state: OverlayContentState) {
         appState.setOverlayContentState(state)
+    }
+
+    private func translationPreferencesChanged() {
+        guard appState.isOverlayVisible else { return }
+        activeProviderPipelineController.refreshTranslation(appState: appState)
+    }
+
+    private func retryTranslationAfterPreparation() {
+        guard appState.isOverlayVisible,
+              appState.playerState.track != nil else {
+            return
+        }
+        activeProviderPipelineController.refreshTranslation(appState: appState)
     }
 
     private func quit() {

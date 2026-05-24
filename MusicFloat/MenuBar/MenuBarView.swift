@@ -57,6 +57,9 @@ struct MenuBarView: View {
         Text("Providers: \(appState.providerRuntimeState.displayName)")
             .foregroundStyle(.secondary)
 
+        Text("Translation: \(appState.translationRuntimeState.displayName)")
+            .foregroundStyle(.secondary)
+
         Text(appState.playerState.track?.displayTitle ?? "No current track")
             .foregroundStyle(.secondary)
 
