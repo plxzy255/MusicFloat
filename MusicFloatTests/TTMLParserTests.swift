@@ -108,6 +108,31 @@ final class TTMLParserTests: XCTestCase {
     }
 
     @MainActor
+    func testWordTimedParentheticalAdlibSticksToPreviousWord() {
+        let ttml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <tt xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Word">
+          <body>
+            <div>
+              <p begin="00:01.000" end="00:04.000">
+                <span begin="00:01.000" end="00:01.400">out</span><span begin="00:01.400" end="00:01.800">(Yeah)</span><span begin="00:01.800" end="00:02.400">Brooklyn</span>
+              </p>
+            </div>
+          </body>
+        </tt>
+        """
+
+        let document = TTMLParser.parse(ttml: ttml)
+
+        XCTAssertEqual(document?.lines.first?.text, "out(Yeah) Brooklyn")
+        XCTAssertEqual(document?.lines.first?.syllables.map(\.text), [
+            "out",
+            "(Yeah) ",
+            "Brooklyn"
+        ])
+    }
+
+    @MainActor
     func testParsesHourMinuteSecondAndSecondsTimecodes() {
         XCTAssertEqual(TTMLParser.parseTimecode("01:02:03.456"), 3723.456)
         XCTAssertEqual(TTMLParser.parseTimecode("02:03.250"), 123.25)

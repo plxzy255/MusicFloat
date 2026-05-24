@@ -188,7 +188,7 @@ enum TTMLParser {
                 return false
             }
 
-            return previous.isWordJoinCandidate && current.isWordJoinCandidate
+            return previous.shouldSpaceBeforeNextWord && current.canStartInferredWord
         }
 
         private func appendSpaceToPreviousSyllable() {
@@ -250,9 +250,14 @@ enum TTMLParser {
 }
 
 private extension Character {
-    var isWordJoinCandidate: Bool {
+    var canStartInferredWord: Bool {
         guard unicodeScalars.allSatisfy(\.isASCII) else { return false }
-        return isLetter || isNumber || self == "," || self == "." || self == "!" || self == "?" || self == "'" || self == "’"
+        return isLetter || isNumber
+    }
+
+    var shouldSpaceBeforeNextWord: Bool {
+        guard unicodeScalars.allSatisfy(\.isASCII) else { return false }
+        return isLetter || isNumber || self == "," || self == "." || self == "!" || self == "?" || self == "'" || self == "’" || self == ")"
     }
 }
 
