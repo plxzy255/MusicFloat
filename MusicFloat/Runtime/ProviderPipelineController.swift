@@ -111,6 +111,12 @@ final class ProviderPipelineController {
         lastIntegratedVisibleLyricsRefresh = now
 
         let current = appState.lyricsDocument
+        if current.source == .appleMusicWeb, current.isTimed {
+            // Authoritative timed document straight from Apple. Do not
+            // overwrite with a lagging AX scrape and do not calibrate —
+            // the TTML clock IS ground truth here.
+            return
+        }
         if current.source == .lrclib, current.isTimed {
             // Calibration path: AX gives us ground-truth current line. Align
             // the LRC clock to it instead of replacing the (multi-line, timed)

@@ -7,9 +7,52 @@ struct SettingsView: View {
     @AppStorage("preferredTranslationLanguage") private var preferredTranslationLanguage = "French"
     @AppStorage("overlayWidthPreset") private var overlayWidthPresetRaw = OverlayWidthPreset.medium.rawValue
     @AppStorage("reduceHiddenMemoryUsage") private var reduceHiddenMemoryUsage = true
+    @AppStorage("lrclibFallbackEnabled") private var lrclibFallbackEnabled = true
+    @State private var mediaUserTokenInput: String = ""
+    @State private var mediaUserTokenSavedHint: String = ""
 
     var body: some View {
         Form {
+            Section("Apple Music") {
+                if MediaUserTokenStore.isConfigured {
+                    LabeledContent("media-user-token", value: "Configured")
+                } else {
+                    LabeledContent("media-user-token", value: "Not configured")
+                        .foregroundStyle(.secondary)
+                }
+                SecureField("Paste media-user-token", text: $mediaUserTokenInput)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Button("Save") {
+                        MediaUserTokenStore.save(mediaUserTokenInput)
+                        mediaUserTokenInput = ""
+                        mediaUserTokenSavedHint = MediaUserTokenStore.isConfigured ? "Saved." : "Cleared."
+                        AppTelemetry.settings.info("media-user-token saved configured=\(MediaUserTokenStore.isConfigured)")
+                    }
+                    .disabled(mediaUserTokenInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Clear") {
+                        MediaUserTokenStore.clear()
+                        mediaUserTokenInput = ""
+                        mediaUserTokenSavedHint = "Cleared."
+                        AppTelemetry.settings.info("media-user-token cleared")
+                    }
+                    .disabled(!MediaUserTokenStore.isConfigured)
+                    Spacer()
+                    if !mediaUserTokenSavedHint.isEmpty {
+                        Text(mediaUserTokenSavedHint)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Text("Sign in at music.apple.com, copy the `media-user-token` cookie value from your browser's devtools, paste it here. Required to fetch the same timed lyrics Music.app uses.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("Allow LRCLIB / Music app UI fallback", isOn: $lrclibFallbackEnabled)
+                Text("When Apple has no lyrics for a track, fall back to LRCLIB and the Music.app lyrics panel. Disable to pin lyrics to Apple's data only.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Overlay") {
                 Toggle("Show translation", isOn: $showsTranslation)
 

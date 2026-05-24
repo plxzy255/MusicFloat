@@ -35,9 +35,12 @@ struct MockLyricsProvider: LyricsProvider {
 
 /// Real public lyrics provider.
 ///
-/// Strategy: try Music.app's integrated lyrics first, then fall back to LRCLIB.
-/// Results are memoized by `track.id` for the lifetime of the controller so
-/// we don't re-hit the network on every overlay show or play/pause cycle.
+/// Priority: AppleScript library → Apple Music web API (if configured) →
+/// LRCLIB → AX panel. The Apple Music web path requires a one-time
+/// `media-user-token` paste in Settings; when not configured we skip it.
+/// The LRCLIB → AX fallback can be disabled via the
+/// `lrclibFallbackEnabled` toggle so the user can pin the experience to
+/// "Apple data only".
 @MainActor
 final class PublicLyricsProvider: LyricsProvider {
     let displayName = "Public lyrics provider"
@@ -45,6 +48,13 @@ final class PublicLyricsProvider: LyricsProvider {
     private var memoryCache: [String: LyricsDocument] = [:]
     private let maxCacheEntries = 64
     private var cacheOrder: [String] = []
+    private let appleMusicWeb = AppleMusicWebLyricsProvider()
+
+    /// When false, only AppleScript library + Apple Music web API are
+    /// consulted. UserDefaults-backed so the setting persists.
+    var lrclibFallbackEnabled: Bool {
+        UserDefaults.standard.object(forKey: "lrclibFallbackEnabled") as? Bool ?? true
+    }
 
     func lyrics(for track: NowPlayingTrack) async -> LyricsProviderResult {
         if track.providerName.lowercased().contains("mock") {
@@ -67,7 +77,32 @@ final class PublicLyricsProvider: LyricsProvider {
             return .failed("Allow MusicFloat in Privacy & Security > Accessibility to use Music lyrics.")
         }
 
-        // 2) LRCLIB — prefer synced lyrics over the AX single-line scrape so
+        // 2) Apple Music web API — millisecond-accurate TTML straight from
+        // Apple. Only runs when the user has pasted their media-user-token
+        // in Settings.
+        if MediaUserTokenStore.isConfigured {
+            do {
+                if let doc = try await appleMusicWeb.lyrics(for: track) {
+                    store(doc, for: track.id)
+                    AppTelemetry.performance.info("Lyrics hit appleMusicWeb timed=\(doc.isTimed) lines=\(doc.lines.count)")
+                    return .available(doc)
+                }
+                AppTelemetry.performance.info("AM web returned no lyrics")
+            } catch is CancellationError {
+                return .unavailable
+            } catch {
+                AppTelemetry.performance.error("AM web error: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+
+        // Fallback gate — when disabled we stop here and surface "no lyrics"
+        // so the user sees the authoritative Apple result instead of a
+        // potentially mismatched LRCLIB upload.
+        guard lrclibFallbackEnabled else {
+            return .unavailable
+        }
+
+        // 3) LRCLIB — prefer synced lyrics over the AX single-line scrape so
         // we can show a full timed document. Calibration against the Music UI
         // happens later in the refresh tick.
         do {
@@ -98,7 +133,7 @@ final class PublicLyricsProvider: LyricsProvider {
             AppTelemetry.performance.error("LRCLIB error: \(error.localizedDescription, privacy: .public)")
         }
 
-        // 3) AX panel — final catalog fallback when LRCLIB has nothing.
+        // 4) AX panel — final catalog fallback when LRCLIB has nothing.
         if let axDoc = MusicAppLyricsProvider.fetchCurrentVisibleLyricsLineDocument() {
             AppTelemetry.performance.info("Lyrics hit \(axDoc.source.rawValue, privacy: .public) timed=\(axDoc.isTimed) lines=\(axDoc.lines.count)")
             return .available(axDoc)
