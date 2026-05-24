@@ -7,7 +7,6 @@ dist/
 
 # Xcode per-user state
 **/xcuserdata/
-**/xcshareddata/WorkspaceSettings.xcsettings
 
 # Local scratch / reference material (third-party repos pulled for research)
 .tmp/

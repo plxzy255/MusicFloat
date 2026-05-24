@@ -65,8 +65,14 @@ final class PublicLyricsProvider: LyricsProvider {
         }
 
         // 1) AppleScript library lyrics. These are canonical for local/
-        // library tracks and always plain text — keep as highest priority.
-        if let doc = MusicAppLyricsProvider.fetchCurrentTrackLyrics() {
+        // library tracks and always plain text. `fetchCurrentTrackLyrics`
+        // will also fall back to an AX panel scrape internally when
+        // AppleScript has nothing — for catalog tracks that's _always_ the
+        // case, so we'd short-circuit every catalog-track lookup before the
+        // web API ever runs. Filter strictly to canonical `.musicApp`
+        // results; AX is reconsidered at the end of the pipeline.
+        let appleScriptDoc = MusicAppLyricsProvider.fetchCurrentTrackLyrics()
+        if let doc = appleScriptDoc, doc.source == .musicApp {
             if shouldCache(document: doc) {
                 store(doc, for: track.id)
             }
