@@ -1,5 +1,4 @@
 import Foundation
-import NaturalLanguage
 
 struct LyricSyllable: Equatable, Sendable {
     let text: String
@@ -82,7 +81,6 @@ struct LyricsDocument: Equatable, Sendable {
         self.lines = lines
         self.isTimed = isTimed
         self.sourceLanguageIdentifier = Self.normalizedLanguageIdentifier(sourceLanguageIdentifier)
-            ?? Self.inferredSourceLanguageIdentifier(from: lines)
         self.offsetCorrection = offsetCorrection
     }
 
@@ -98,25 +96,6 @@ struct LyricsDocument: Equatable, Sendable {
             sourceLanguageIdentifier: sourceLanguageIdentifier,
             offsetCorrection: offset
         )
-    }
-
-    static func inferredSourceLanguageIdentifier(from lines: [LyricLine]) -> String? {
-        let text = lines
-            .map(\.text)
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard text.count >= 20 else { return nil }
-
-        let recognizer = NLLanguageRecognizer()
-        recognizer.processString(text)
-        let hypotheses = recognizer.languageHypotheses(withMaximum: 1)
-        guard let (language, confidence) = hypotheses.first,
-              confidence >= 0.35,
-              language != .undetermined else {
-            return nil
-        }
-
-        return normalizedLanguageIdentifier(language.rawValue)
     }
 
     static func normalizedLanguageIdentifier(_ identifier: String?) -> String? {

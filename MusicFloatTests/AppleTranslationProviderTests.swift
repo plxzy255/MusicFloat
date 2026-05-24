@@ -96,6 +96,22 @@ final class AppleTranslationProviderTests: XCTestCase {
         XCTAssertEqual(result, .status(.unavailable(reason: "Source language unavailable")))
     }
 
+    func testLyricsDocumentDoesNotInferSourceLanguageDuringInitialization() {
+        let document = LyricsDocument(
+            source: .mock,
+            lines: [
+                LyricLine(
+                    id: 0,
+                    text: "Hello there, this mock lyric line is intentionally long enough for language detection.",
+                    startTime: nil
+                )
+            ],
+            isTimed: false
+        )
+
+        XCTAssertNil(document.sourceLanguageIdentifier)
+    }
+
     func testFiltersEmptyAndSourceIdenticalTranslatedLines() async {
         let provider = AppleTranslationProvider(dependencies: .init(
             availability: { _, _ in .installed },

@@ -1,5 +1,8 @@
 import Foundation
+#if ENABLE_APPLE_TRANSLATION
+import NaturalLanguage
 @preconcurrency @unsafe import Translation
+#endif
 
 struct TranslatedLyricLine: Equatable, Identifiable, Sendable {
     let id: Int
@@ -166,6 +169,7 @@ final class AppleTranslationProvider: TranslationProvider {
         source: Locale.Language,
         target: Locale.Language
     ) async -> AppleTranslationAvailability {
+        #if ENABLE_APPLE_TRANSLATION
         let availability = LanguageAvailability(preferredStrategy: .lowLatency)
         switch await availability.status(from: source, to: target) {
         case .installed:
@@ -177,6 +181,11 @@ final class AppleTranslationProvider: TranslationProvider {
         @unknown default:
             return .unsupported
         }
+        #else
+        _ = source
+        _ = target
+        return .unsupported
+        #endif
     }
 
     nonisolated private static func liveTranslate(
@@ -184,6 +193,7 @@ final class AppleTranslationProvider: TranslationProvider {
         target: Locale.Language,
         requests: [TranslationRequestPayload]
     ) async throws -> [TranslationResponsePayload] {
+        #if ENABLE_APPLE_TRANSLATION
         let session = TranslationSession(
             installedSource: source,
             target: target,
@@ -208,6 +218,12 @@ final class AppleTranslationProvider: TranslationProvider {
                 text: response.targetText
             )
         }
+        #else
+        _ = source
+        _ = target
+        _ = requests
+        return []
+        #endif
     }
 
     func translation(
@@ -232,7 +248,9 @@ final class AppleTranslationProvider: TranslationProvider {
             return .status(.unavailable(reason: "No lyric lines to translate"))
         }
 
-        guard let sourceIdentifier = document.sourceLanguageIdentifier else {
+        let inferredSourceIdentifier = document.sourceLanguageIdentifier
+            ?? Self.inferSourceLanguageIdentifier(from: document.lines)
+        guard let sourceIdentifier = inferredSourceIdentifier else {
             return .status(.unavailable(reason: "Source language unavailable"))
         }
         guard let normalizedSource = LyricsDocument.normalizedLanguageIdentifier(sourceIdentifier),
@@ -309,6 +327,30 @@ final class AppleTranslationProvider: TranslationProvider {
             return false
         }
         return sourceCode == targetCode
+    }
+
+    static func inferSourceLanguageIdentifier(from lines: [LyricLine]) -> String? {
+        #if ENABLE_APPLE_TRANSLATION
+        let text = lines
+            .map(\.text)
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.count >= 20 else { return nil }
+
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(text)
+        let hypotheses = recognizer.languageHypotheses(withMaximum: 1)
+        guard let (language, confidence) = hypotheses.first,
+              confidence >= 0.35,
+              language != .undetermined else {
+            return nil
+        }
+
+        return LyricsDocument.normalizedLanguageIdentifier(language.rawValue)
+        #else
+        _ = lines
+        return nil
+        #endif
     }
 
     private static func normalizedText(_ text: String) -> String {

@@ -1,6 +1,8 @@
 import OSLog
 import SwiftUI
+#if ENABLE_APPLE_TRANSLATION
 @preconcurrency @unsafe import Translation
+#endif
 
 struct SettingsView: View {
     @Bindable var appState: AppState
@@ -15,9 +17,32 @@ struct SettingsView: View {
     @State private var mediaUserTokenInput: String = ""
     @State private var mediaUserTokenSavedHint: String = ""
     @State private var supportedTranslationLanguages: [Locale.Language] = []
+    #if ENABLE_APPLE_TRANSLATION
     @State private var preparationConfiguration: TranslationSession.Configuration?
+    #endif
 
     var body: some View {
+        #if ENABLE_APPLE_TRANSLATION
+        settingsForm
+            .translationTask(preparationConfiguration) { session in
+                do {
+                    try await session.prepareTranslation()
+                    preparationConfiguration = nil
+                    appState.setTranslationRuntimeState(.idle)
+                    onTranslationPreparationCompleted()
+                    AppTelemetry.settings.info("Translation preparation completed")
+                } catch {
+                    preparationConfiguration = nil
+                    appState.setTranslationRuntimeState(.failed("Translation preparation failed"))
+                    AppTelemetry.settings.info("Translation preparation failed")
+                }
+            }
+        #else
+        settingsForm
+        #endif
+    }
+
+    private var settingsForm: some View {
         Form {
             Section("Apple Music") {
                 if MediaUserTokenStore.isConfigured {
@@ -83,6 +108,7 @@ struct SettingsView: View {
                 LabeledContent("Source", value: appState.lyricsSourceLanguageName)
                 LabeledContent("Status", value: appState.translationRuntimeState.detailText)
 
+                #if ENABLE_APPLE_TRANSLATION
                 if let download = appState.pendingTranslationDownload {
                     Button("Prepare Translation Languages") {
                         preparationConfiguration = TranslationSession.Configuration(
@@ -93,6 +119,7 @@ struct SettingsView: View {
                         AppTelemetry.settings.info("Translation preparation requested")
                     }
                 }
+                #endif
             }
 
             Section("Runtime") {
@@ -112,31 +139,8 @@ struct SettingsView: View {
         .onAppear {
             AppTelemetry.settings.info("Settings view appeared")
             syncPreferencesToAppState()
-        }
-        .task {
-            let languages = await Self.loadSupportedTranslationLanguages()
-            supportedTranslationLanguages = languages.sorted {
-                Self.localizedLanguageName(for: $0.minimalIdentifier) < Self.localizedLanguageName(for: $1.minimalIdentifier)
-            }
-            if !supportedTranslationLanguages.isEmpty,
-               !Self.languageList(supportedTranslationLanguages, containsIdentifier: preferredTranslationLanguageIdentifier) {
-                preferredTranslationLanguageIdentifier = Self.defaultSupportedTargetLanguageIdentifier(
-                    from: supportedTranslationLanguages
-                )
-                syncPreferencesToAppState()
-            }
-        }
-        .translationTask(preparationConfiguration) { session in
-            do {
-                try await session.prepareTranslation()
-                preparationConfiguration = nil
-                appState.setTranslationRuntimeState(.idle)
-                onTranslationPreparationCompleted()
-                AppTelemetry.settings.info("Translation preparation completed")
-            } catch {
-                preparationConfiguration = nil
-                appState.setTranslationRuntimeState(.failed("Translation preparation failed"))
-                AppTelemetry.settings.info("Translation preparation failed")
+            Task {
+                await loadTranslationLanguageOptions()
             }
         }
         .onChange(of: showsTranslation) {
@@ -179,6 +183,20 @@ struct SettingsView: View {
         }
     }
 
+    private func loadTranslationLanguageOptions() async {
+        let languages = await Self.loadSupportedTranslationLanguages()
+        supportedTranslationLanguages = languages.sorted {
+            Self.localizedLanguageName(for: $0.minimalIdentifier) < Self.localizedLanguageName(for: $1.minimalIdentifier)
+        }
+        if !supportedTranslationLanguages.isEmpty,
+           !Self.languageList(supportedTranslationLanguages, containsIdentifier: preferredTranslationLanguageIdentifier) {
+            preferredTranslationLanguageIdentifier = Self.defaultSupportedTargetLanguageIdentifier(
+                from: supportedTranslationLanguages
+            )
+            syncPreferencesToAppState()
+        }
+    }
+
     private static func localizedLanguageName(for identifier: String) -> String {
         Locale.current.localizedString(forIdentifier: identifier) ?? identifier
     }
@@ -203,9 +221,13 @@ struct SettingsView: View {
     }
 
     nonisolated private static func loadSupportedTranslationLanguages() async -> [Locale.Language] {
+        #if ENABLE_APPLE_TRANSLATION
         await Task.detached {
             await LanguageAvailability(preferredStrategy: .lowLatency).supportedLanguages
         }.value
+        #else
+        []
+        #endif
     }
 }
 
