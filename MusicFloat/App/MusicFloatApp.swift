@@ -100,7 +100,7 @@ struct MusicFloatApp: App {
                     AppTelemetry.performance.info("Live track refresh deferred while overlay hidden")
                     return
                 }
-                liveProviderPipelineController.refreshOverlayContent(appState: appState)
+                liveProviderPipelineController.refreshOverlayContentForLiveTrack(appState: appState)
             } onLiveTick: { [appState, liveProviderPipelineController] in
                 liveProviderPipelineController.refreshIntegratedVisibleLyrics(appState: appState)
             }

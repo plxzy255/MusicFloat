@@ -45,7 +45,7 @@ enum AppleMusicEventListener {
                 object: nil,
                 queue: .main
             ) { note in
-                if let event = parse(note) {
+                if let event = makeEvent(userInfo: note.userInfo) {
                     continuation.yield(event)
                 }
             }
@@ -73,9 +73,8 @@ enum AppleMusicEventListener {
 
     // MARK: - Parsing
 
-    nonisolated private static func parse(_ notification: Notification) -> PlayerInfoEvent? {
-        let info = notification.userInfo ?? [:]
-
+    nonisolated static func makeEvent(userInfo info: [AnyHashable: Any]?) -> PlayerInfoEvent? {
+        let info = info ?? [:]
         let rawState = (info["Player State"] as? String) ?? "Stopped"
         let status: PlaybackStatus = {
             switch rawState.lowercased() {
@@ -97,8 +96,12 @@ enum AppleMusicEventListener {
         let duration = totalTimeMs / 1000.0
 
         let persistentID: String = {
-            if let v = info["PersistentID"] as? NSNumber { return v.stringValue }
-            if let v = info["Persistent ID"] as? String { return v }
+            if let v = info["PersistentID"] as? NSNumber {
+                return canonicalPersistentID(v.uint64Value)
+            }
+            if let v = info["Persistent ID"] as? String {
+                return canonicalPersistentID(v) ?? v
+            }
             return "\(artist)|\(album)|\(title)"
         }()
         let rawSummary = [
@@ -109,17 +112,6 @@ enum AppleMusicEventListener {
             "durationMs=\(totalTimeMs)",
             "persistentID=\(persistentID)"
         ].joined(separator: " ")
-
-        // No useful track payload and not playing → treat as disconnected.
-        if title.isEmpty, status != .playing {
-            let state = PlayerState(
-                playbackStatus: .stopped,
-                track: nil,
-                elapsedTime: 0,
-                updatedAt: Date()
-            )
-            return PlayerInfoEvent(state: state, rawSummary: rawSummary)
-        }
 
         let track = title.isEmpty ? nil : NowPlayingTrack(
             id: persistentID,
@@ -139,5 +131,21 @@ enum AppleMusicEventListener {
             updatedAt: Date()
         )
         return PlayerInfoEvent(state: state, rawSummary: rawSummary)
+    }
+
+    nonisolated static func canonicalPersistentID(_ value: UInt64) -> String {
+        String(format: "%016llX", value)
+    }
+
+    nonisolated static func canonicalPersistentID(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let hexCharacterSet = CharacterSet(charactersIn: "0123456789abcdefABCDEF")
+        guard trimmed.unicodeScalars.allSatisfy({ hexCharacterSet.contains($0) }),
+              trimmed.count <= 16,
+              let value = UInt64(trimmed, radix: 16) else {
+            return nil
+        }
+        return canonicalPersistentID(value)
     }
 }

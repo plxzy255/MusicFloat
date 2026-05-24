@@ -67,13 +67,14 @@ final class PlayerController {
                 let previousTrackID = appState.playerState.track?.id
                 let incomingTrackID = state.track?.id
                 let isSameTrack = incomingTrackID != nil && incomingTrackID == previousTrackID
-                let eventDelta = state.elapsedTime - appState.playerState.elapsedTime
+                let previousEffectiveElapsed = appState.effectiveElapsedTime
+                let eventDelta = state.elapsedTime - previousEffectiveElapsed
                 AppTelemetry.performance.info(
-                    "Live event: status=\(state.playbackStatus.rawValue, privacy: .public) trackID=\(incomingTrackID ?? "nil", privacy: .public) elapsed=\(state.elapsedTime) previousElapsed=\(appState.playerState.elapsedTime) delta=\(eventDelta)"
+                    "Live event: status=\(state.playbackStatus.rawValue, privacy: .public) trackID=\(incomingTrackID ?? "nil", privacy: .public) elapsed=\(state.elapsedTime) previousElapsed=\(previousEffectiveElapsed) delta=\(eventDelta)"
                 )
                 if isSameTrack, abs(eventDelta) > Self.seekDetectionThreshold {
                     AppTelemetry.performance.info(
-                        "SEEK_DETECTED source=playerInfoEvent trackID=\(incomingTrackID ?? "nil", privacy: .public) previousElapsed=\(appState.playerState.elapsedTime) incomingElapsed=\(state.elapsedTime) delta=\(eventDelta)"
+                        "SEEK_DETECTED source=playerInfoEvent trackID=\(incomingTrackID ?? "nil", privacy: .public) previousElapsed=\(previousEffectiveElapsed) incomingElapsed=\(state.elapsedTime) delta=\(eventDelta)"
                     )
                 }
                 appState.updatePlayerState(state)
@@ -135,7 +136,7 @@ final class PlayerController {
         liveTickTask = Task { @MainActor [weak self, weak appState] in
             guard let self, let appState else { return }
             var lastWall = Date()
-            var elapsed = appState.playerState.elapsedTime
+            var elapsed = Self.liveTickInitialElapsed(appState: appState)
             // Start with `lastResync` in the past so the first resync fires
             // immediately on the next loop iteration. This catches the case
             // where AppleScript was wedged at event time but recovers by the
@@ -211,6 +212,10 @@ final class PlayerController {
                 onLiveTick?()
             }
         }
+    }
+
+    static func liveTickInitialElapsed(appState: AppState) -> TimeInterval {
+        appState.effectiveElapsedTime
     }
 
     // MARK: - Mock Preview
