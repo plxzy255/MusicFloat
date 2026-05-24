@@ -30,6 +30,14 @@ struct MusicFloatApp: App {
                 toggleOverlay()
             }
         }
+
+        if CommandLine.arguments.contains("--live") {
+            AppTelemetry.lifecycle.info("Live mode requested — auto-starting Live Apple Music mode and overlay in 500ms")
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) { [self] in
+                toggleLiveAppleMusic()
+                toggleOverlay()
+            }
+        }
     }
 
     var body: some Scene {
