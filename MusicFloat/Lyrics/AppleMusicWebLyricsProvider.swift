@@ -315,7 +315,8 @@ final class AppleMusicWebLyricsProvider {
 
         let decoded = try await fetchDecoded(SyllableLyricsResponse.self, url: url, developerToken: developerToken, mediaUserToken: mediaUserToken)
         let variants = variants(from: decoded.data.first?.attributes)
-        AppTelemetry.performance.info("AM web: endpoint=syllable-lyrics localization_count=\(max(variants.count - 1, 0))")
+        let localizationCount = variants.filter { $0.source == .localization }.count
+        AppTelemetry.performance.info("AM web: endpoint=syllable-lyrics localization_count=\(localizationCount)")
         return selectAndParse(variants: variants, storefrontLanguage: language, endpoint: "syllable-lyrics")
     }
 
