@@ -29,9 +29,8 @@ struct LyricsOverlayView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
 
-                Text(snapshot.lyricText)
+                lyricText(for: snapshot)
                     .font(.system(.title2, design: .rounded, weight: .semibold))
-                    .foregroundStyle(.primary)
                     .lineLimit(2)
                     .minimumScaleFactor(0.78)
 
@@ -73,6 +72,47 @@ struct LyricsOverlayView: View {
         case .failed:
             .red
         }
+    }
+
+    private func lyricText(for snapshot: LyricsOverlaySnapshot) -> Text {
+        guard let activeLine = snapshot.activeLine, !activeLine.syllables.isEmpty else {
+            return Text(snapshot.lyricText)
+                .foregroundColor(.primary)
+        }
+
+        let activeIndex = LyricsOverlaySnapshotBuilder.activeSyllableIndex(
+            in: activeLine,
+            at: snapshot.effectiveLyricTime
+        )
+
+        return activeLine.syllables.indices.reduce(Text("")) { text, index in
+            text + styledSyllable(activeLine.syllables[index], index: index, activeIndex: activeIndex)
+        }
+    }
+
+    private func styledSyllable(
+        _ syllable: LyricSyllable,
+        index: Int,
+        activeIndex: Int?
+    ) -> Text {
+        guard let activeIndex else {
+            return Text(syllable.text)
+                .foregroundColor(.secondary)
+        }
+
+        if index < activeIndex {
+            return Text(syllable.text)
+                .foregroundColor(.primary.opacity(0.62))
+        }
+
+        if index == activeIndex {
+            return Text(syllable.text)
+                .foregroundColor(.primary)
+                .bold()
+        }
+
+        return Text(syllable.text)
+            .foregroundColor(.secondary)
     }
 }
 
