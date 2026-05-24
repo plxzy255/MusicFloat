@@ -61,6 +61,11 @@ struct MockMusicAppBridge: MusicAppBridge {
 struct PublicAppleMusicAppBridge: MusicAppBridge {
     let displayName = "Public Apple API bridge"
 
+    struct RefinedPlayerInfoEvent: Sendable {
+        let state: PlayerState
+        let refineSucceeded: Bool
+    }
+
     func currentState() async -> PlayerState {
         guard AppleMusicEventListener.isMusicAppRunning else {
             return .disconnected
@@ -72,8 +77,7 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
         AsyncStream(bufferingPolicy: .bufferingNewest(8)) { continuation in
             let stream = AppleMusicEventListener.makePlayerInfoStream()
             let task = Task { @MainActor in
-                var lastEmittedTrackID: String?
-                var lastEmittedElapsed: TimeInterval = 0
+                var lastEmittedState: PlayerState?
                 var lastEmittedAt = Date()
 
                 for await playerInfoEvent in stream {
@@ -86,9 +90,8 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
                     // track; during skips Music.app can briefly report the old
                     // current track, and mixing that elapsed time with the new
                     // track makes lyrics look many lines behind.
-                    var refined = event
-                    var refineOK = false
-                    let isNewTrackEvent = event.track?.id != nil && event.track?.id != lastEmittedTrackID
+                    var matchingSnapshot: PlayerState?
+                    let isNewTrackEvent = event.track?.id != nil && event.track?.id != lastEmittedState?.track?.id
 
                     if event.playbackStatus != .stopped {
                         let maxAttempts = isNewTrackEvent ? 1 : 3
@@ -107,44 +110,110 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
                                 )
                                 continue
                             }
-                            refined = PlayerState(
-                                playbackStatus: event.playbackStatus,
-                                track: event.track ?? snapshot.track,
-                                elapsedTime: snapshot.elapsedTime,
-                                updatedAt: Date()
-                            )
-                            refineOK = true
+                            matchingSnapshot = snapshot
                             break
                         }
+                    } else if event.track == nil {
+                        matchingSnapshot = Self.pullSnapshot()
                     }
 
-                    // If we still couldn't refine and this is the SAME track
-                    // we last emitted (just a state change), don't reset
-                    // elapsed to 0 — extrapolate from last known instead.
-                    if !refineOK,
-                       event.playbackStatus == .playing,
-                       let lastID = lastEmittedTrackID,
-                       event.track?.id == lastID {
-                        let extrapolated = lastEmittedElapsed + Date().timeIntervalSince(lastEmittedAt)
-                        refined = PlayerState(
-                            playbackStatus: .playing,
-                            track: event.track,
-                            elapsedTime: max(0, extrapolated),
-                            updatedAt: Date()
-                        )
-                    }
+                    let refinedEvent = Self.refinePlayerInfoEvent(
+                        event: event,
+                        lastEmittedState: lastEmittedState,
+                        lastEmittedAt: lastEmittedAt,
+                        snapshot: matchingSnapshot,
+                        now: Date()
+                    )
+                    let refined = refinedEvent.state
 
                     AppTelemetry.performance.info(
-                        "playerInfo refined trackID=\(refined.track?.id ?? "nil", privacy: .public) elapsed=\(refined.elapsedTime) refineOK=\(refineOK)"
+                        "playerInfo refined trackID=\(refined.track?.id ?? "nil", privacy: .public) elapsed=\(refined.elapsedTime) refineOK=\(refinedEvent.refineSucceeded)"
                     )
                     continuation.yield(refined)
-                    lastEmittedTrackID = refined.track?.id
-                    lastEmittedElapsed = refined.elapsedTime
+                    lastEmittedState = refined
                     lastEmittedAt = Date()
                 }
                 continuation.finish()
             }
             continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    @MainActor
+    static func refinePlayerInfoEvent(
+        event: PlayerState,
+        lastEmittedState: PlayerState?,
+        lastEmittedAt: Date,
+        snapshot: PlayerState?,
+        now: Date
+    ) -> RefinedPlayerInfoEvent {
+        if let snapshot {
+            if event.playbackStatus == .stopped, event.track == nil, snapshot.track == nil {
+                return RefinedPlayerInfoEvent(state: .disconnected, refineSucceeded: true)
+            }
+            return RefinedPlayerInfoEvent(
+                state: PlayerState(
+                    playbackStatus: event.playbackStatus == .stopped ? snapshot.playbackStatus : event.playbackStatus,
+                    track: event.track ?? snapshot.track,
+                    elapsedTime: snapshot.elapsedTime,
+                    updatedAt: now
+                ),
+                refineSucceeded: true
+            )
+        }
+
+        guard let lastEmittedState,
+              let lastTrack = lastEmittedState.track else {
+            return RefinedPlayerInfoEvent(state: event, refineSucceeded: false)
+        }
+
+        let sameTrackEvent = event.track?.id == lastTrack.id
+        let transientEmptyTrackEvent = event.track == nil && event.playbackStatus != .stopped
+
+        if transientEmptyTrackEvent {
+            return RefinedPlayerInfoEvent(
+                state: PlayerState(
+                    playbackStatus: event.playbackStatus,
+                    track: lastTrack,
+                    elapsedTime: lastEmittedState.elapsedTime,
+                    updatedAt: now
+                ),
+                refineSucceeded: false
+            )
+        }
+
+        if event.track == nil, event.playbackStatus == .stopped {
+            return RefinedPlayerInfoEvent(state: lastEmittedState, refineSucceeded: false)
+        }
+
+        guard sameTrackEvent else {
+            return RefinedPlayerInfoEvent(state: event, refineSucceeded: false)
+        }
+
+        switch event.playbackStatus {
+        case .playing:
+            let extrapolated = lastEmittedState.elapsedTime + now.timeIntervalSince(lastEmittedAt)
+            return RefinedPlayerInfoEvent(
+                state: PlayerState(
+                    playbackStatus: .playing,
+                    track: event.track ?? lastTrack,
+                    elapsedTime: max(0, extrapolated),
+                    updatedAt: now
+                ),
+                refineSucceeded: false
+            )
+        case .paused:
+            return RefinedPlayerInfoEvent(
+                state: PlayerState(
+                    playbackStatus: .paused,
+                    track: event.track ?? lastTrack,
+                    elapsedTime: event.elapsedTime > 0 ? event.elapsedTime : lastEmittedState.elapsedTime,
+                    updatedAt: now
+                ),
+                refineSucceeded: false
+            )
+        case .stopped:
+            return RefinedPlayerInfoEvent(state: event, refineSucceeded: false)
         }
     }
 

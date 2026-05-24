@@ -80,6 +80,18 @@ final class ProviderPipelineController {
         prepareOverlayContent(appState: appState)
     }
 
+    /// Live mode can receive transient empty playerInfo payloads while Music
+    /// is paused or changing state. Preserve the current document unless the
+    /// playback layer has confirmed a real track identity change.
+    func refreshOverlayContentForLiveTrack(appState: AppState) {
+        guard appState.playerState.track != nil else {
+            cancelInFlightLoadPreservingState()
+            AppTelemetry.performance.info("Live provider refresh skipped for empty track payload")
+            return
+        }
+        refreshOverlayContent(appState: appState)
+    }
+
     func cancelInFlightLoadPreservingState() {
         guard loadTask != nil else { return }
         AppTelemetry.performance.info("Provider pipeline load cancelled because live track payload is empty")

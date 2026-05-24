@@ -45,7 +45,7 @@ enum AppleMusicEventListener {
                 object: nil,
                 queue: .main
             ) { note in
-                if let event = parse(note) {
+                if let event = makeEvent(userInfo: note.userInfo) {
                     continuation.yield(event)
                 }
             }
@@ -73,9 +73,8 @@ enum AppleMusicEventListener {
 
     // MARK: - Parsing
 
-    nonisolated private static func parse(_ notification: Notification) -> PlayerInfoEvent? {
-        let info = notification.userInfo ?? [:]
-
+    nonisolated static func makeEvent(userInfo info: [AnyHashable: Any]?) -> PlayerInfoEvent? {
+        let info = info ?? [:]
         let rawState = (info["Player State"] as? String) ?? "Stopped"
         let status: PlaybackStatus = {
             switch rawState.lowercased() {
@@ -109,17 +108,6 @@ enum AppleMusicEventListener {
             "durationMs=\(totalTimeMs)",
             "persistentID=\(persistentID)"
         ].joined(separator: " ")
-
-        // No useful track payload and not playing → treat as disconnected.
-        if title.isEmpty, status != .playing {
-            let state = PlayerState(
-                playbackStatus: .stopped,
-                track: nil,
-                elapsedTime: 0,
-                updatedAt: Date()
-            )
-            return PlayerInfoEvent(state: state, rawSummary: rawSummary)
-        }
 
         let track = title.isEmpty ? nil : NowPlayingTrack(
             id: persistentID,
