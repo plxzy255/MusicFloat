@@ -30,16 +30,15 @@ Keep raw traces out of git; cite run IDs from `reports/performance-runs.jsonl`.
   trace-size reporting in run entries.
 - Next check: confirm trace sizes stay bounded after a full live phased run.
 
-### PERF-003: Deprecated karaoke Text concatenation
-
-- Status: open
-- First seen: PR #9 review/build warnings
-- Signal: SwiftUI warns that `Text + Text` is deprecated in macOS 26.
-- Affected modes: demo, live overlay rendering
-- Current mitigation: no measured runtime regression; track as API-health debt.
-- Next check: replace segmented syllable rendering with a non-deprecated shape
-  and compare overlay CPU/RSS before and after.
-
 ## Resolved
 
-- None yet.
+### PERF-003: Deprecated karaoke Text concatenation
+
+- Status: resolved in PR #12
+- First seen: PR #9 review/build warnings
+- Signal: SwiftUI warned that `Text + Text` is deprecated in macOS 26.
+- Affected modes: demo, live overlay rendering
+- Fix: segmented karaoke text now renders through one `AttributedString`,
+  preserving wrapping and per-syllable styling without `Text` concatenation.
+- Validation: `xcodebuild test -project MusicFloat.xcodeproj -scheme MusicFloat
+  -destination 'platform=macOS' -derivedDataPath .codex/DerivedData`
