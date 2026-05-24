@@ -11,6 +11,7 @@ final class FloatingPanelController {
             let didCreatePanel = panel == nil
             let panel = panel ?? makePanel(appState: appState)
             self.panel = panel
+            applySize(appState: appState, to: panel)
 
             AppTelemetry.windowing.info("Show floating panel created=\(didCreatePanel)")
             panel.orderFrontRegardless()
@@ -31,10 +32,16 @@ final class FloatingPanelController {
         }
     }
 
+    private func applySize(appState: AppState, to panel: NSPanel) {
+        let panelSize = NSSize(width: appState.overlayWidthPreset.width, height: 172)
+        panel.setContentSize(panelSize)
+        panel.contentView?.frame = NSRect(origin: .zero, size: panelSize)
+    }
+
     private func makePanel(appState: AppState) -> NSPanel {
         AppTelemetry.measure("FloatingPanelCreate") {
             AppTelemetry.windowing.info("Create floating panel")
-            let panelWidth = CGFloat(OverlayWidthPreset.wide.width)
+            let panelWidth = CGFloat(appState.overlayWidthPreset.width)
             let panel = NSPanel(
                 contentRect: NSRect(x: 0, y: 0, width: panelWidth, height: 172),
                 styleMask: [.borderless, .nonactivatingPanel],

@@ -52,7 +52,7 @@ struct LyricsOverlayView: View {
                     .stroke(.separator.opacity(0.35), lineWidth: 1)
             }
         }
-        .frame(width: CGFloat(OverlayWidthPreset.wide.width), height: 172)
+        .frame(width: CGFloat(snapshot.widthPreset.width), height: 172)
         .contentShape(Rectangle())
         .onAppear {
             AppTelemetry.windowing.info("Lyrics overlay view appeared")

@@ -49,6 +49,7 @@ struct MusicFloatApp: App {
         } else {
             providerPipelineController.stopHiddenWork(appState: appState)
             playerController.stopMockPreview(appState: appState)
+            playerController.stopLiveAppleMusic(appState: appState)
             panelController.hide(releaseResources: appState.reduceHiddenMemoryUsage)
         }
     }

@@ -7,7 +7,7 @@ final class LyricsSyncEngineTests: XCTestCase {
         let document = LyricsDocument(
             source: .mock,
             lines: [
-                LyricLine(id: 0, text: "first", startTime: 0),
+                LyricLine(id: 0, text: "first", startTime: 5),
                 LyricLine(id: 1, text: "second", startTime: 10),
                 LyricLine(id: 2, text: "third", startTime: 20)
             ],
@@ -17,6 +17,20 @@ final class LyricsSyncEngineTests: XCTestCase {
         let activeLine = LyricsSyncEngine().activeLine(in: document, at: 12)
 
         XCTAssertEqual(activeLine?.id, 1)
+    }
+
+    @MainActor
+    func testTimedDocumentReturnsNilBeforeFirstLineStarts() {
+        let document = LyricsDocument(
+            source: .mock,
+            lines: [
+                LyricLine(id: 0, text: "first", startTime: 5),
+                LyricLine(id: 1, text: "second", startTime: 10)
+            ],
+            isTimed: true
+        )
+
+        XCTAssertNil(LyricsSyncEngine().activeLine(in: document, at: 4.9))
     }
 
     @MainActor

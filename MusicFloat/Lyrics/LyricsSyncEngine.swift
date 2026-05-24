@@ -16,7 +16,7 @@ struct LyricsSyncEngine: Sendable {
             }
 
             return startTime <= elapsedTime
-        } ?? document.lines.first
+        }
     }
 
     func nextLineStart(in document: LyricsDocument, after elapsedTime: TimeInterval) -> TimeInterval? {

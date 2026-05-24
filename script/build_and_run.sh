@@ -32,7 +32,7 @@ build_app() {
     -project "$PROJECT" \
     -scheme "$SCHEME" \
     -configuration "$CONFIGURATION" \
-    -destination "platform=macOS,arch=arm64" \
+    -destination "platform=macOS" \
     -derivedDataPath "$DERIVED_DATA_DIR" \
     build
 }

@@ -204,6 +204,10 @@ final class AppState {
         self.translation = translation
     }
 
+    func clearTranslation() {
+        translation = LyricTranslation(targetLanguage: preferredTranslationLanguage, lines: [])
+    }
+
     func applyProviderReady() {
         providerRuntimeState = .ready
         overlayContentState = .ready

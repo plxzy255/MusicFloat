@@ -38,7 +38,12 @@ final class ProviderPipelineController {
                 return
             }
 
-            switch await lyricsProvider.lyrics(for: track) {
+            let lyricsResult = await lyricsProvider.lyrics(for: track)
+            guard !Task.isCancelled else {
+                return
+            }
+
+            switch lyricsResult {
             case .available(let document):
                 appState.applyLyricsDocument(document)
                 await loadTranslation(for: document, appState: appState)
@@ -68,14 +73,20 @@ final class ProviderPipelineController {
             return
         }
 
-        switch await translationProvider.translation(
+        let translationResult = await translationProvider.translation(
             for: document,
             targetLanguage: appState.preferredTranslationLanguage
-        ) {
+        )
+        guard !Task.isCancelled else {
+            return
+        }
+
+        switch translationResult {
         case .available(let translation):
             appState.applyTranslation(translation)
             appState.applyProviderReady()
         case .unavailable:
+            appState.clearTranslation()
             appState.applyProviderReady()
         case .failed(let message):
             appState.applyProviderFailure(message)
