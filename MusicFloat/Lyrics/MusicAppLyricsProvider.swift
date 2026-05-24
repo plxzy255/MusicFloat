@@ -46,7 +46,7 @@ enum MusicAppLyricsProvider {
     end try
     """
 
-    static func fetchCurrentTrackLyrics() -> LyricsDocument? {
+    static func fetchCurrentTrackLyrics() async -> LyricsDocument? {
         requiresAccessibilityPermission = false
         shouldRetryVisibleLyrics = false
 
@@ -54,7 +54,7 @@ enum MusicAppLyricsProvider {
             AppTelemetry.performance.info("Music.app AppleScript lyrics skipped because Music is not running")
             return nil
         }
-        guard let raw = AppleScriptRunner.runString(script) else {
+        guard let raw = await AppleScriptRunner.runStringOffMain(script) else {
             AppTelemetry.performance.info("Music.app AppleScript lyrics returned no script result")
             return nil
         }

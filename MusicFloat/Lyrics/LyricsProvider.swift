@@ -46,7 +46,7 @@ final class PublicLyricsProvider: LyricsProvider {
     let displayName = "Public lyrics provider"
 
     struct Dependencies {
-        var fetchAppleScriptLyrics: @MainActor () -> LyricsDocument?
+        var fetchAppleScriptLyrics: @MainActor () async -> LyricsDocument?
         var requiresAccessibilityPermission: @MainActor () -> Bool
         var hasAccessibilityPermission: @MainActor () -> Bool
         var shouldRetryVisibleLyrics: @MainActor () -> Bool
@@ -60,7 +60,7 @@ final class PublicLyricsProvider: LyricsProvider {
         static func live(appleMusicWeb: AppleMusicWebLyricsProvider) -> Self {
             Self(
                 fetchAppleScriptLyrics: {
-                    MusicAppLyricsProvider.fetchCurrentTrackLyrics()
+                    await MusicAppLyricsProvider.fetchCurrentTrackLyrics()
                 },
                 requiresAccessibilityPermission: {
                     MusicAppLyricsProvider.requiresAccessibilityPermission
@@ -132,7 +132,7 @@ final class PublicLyricsProvider: LyricsProvider {
         // tracks and always plain text. Keep this lookup library-only; the AX
         // panel scrape is intentionally the final fallback because traversing
         // Music.app's accessibility tree can briefly stall the UI.
-        let appleScriptDoc = dependencies.fetchAppleScriptLyrics()
+        let appleScriptDoc = await dependencies.fetchAppleScriptLyrics()
         if let doc = appleScriptDoc, doc.source == .musicApp {
             if shouldCache(document: doc) {
                 store(doc, for: track.id)

@@ -44,7 +44,7 @@ enum AppleMusicCatalogResolver {
         cachedStorefront: String?,
         session: URLSession = .shared
     ) async -> Identity? {
-        if let local = resolveFromAppleScript() {
+        if let local = await resolveFromAppleScript() {
             return local
         }
         let storefront = cachedStorefront ?? "us"
@@ -59,8 +59,8 @@ enum AppleMusicCatalogResolver {
 
     // MARK: - AppleScript URL parsing
 
-    private static func resolveFromAppleScript() -> Identity? {
-        guard let raw = AppleScriptRunner.runString(urlScript)?
+    private static func resolveFromAppleScript() async -> Identity? {
+        guard let raw = await AppleScriptRunner.runStringOffMain(urlScript)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty,
               let url = URL(string: raw),

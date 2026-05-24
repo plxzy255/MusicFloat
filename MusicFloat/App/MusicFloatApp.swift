@@ -5,7 +5,7 @@ import SwiftUI
 @MainActor
 struct MusicFloatApp: App {
     @State private var appState = AppState()
-    @State private var liveProviderPipelineController: ProviderPipelineController?
+    private let liveProviderPipelineControllerStore = LiveProviderPipelineControllerStore()
     private let panelController = FloatingPanelController()
     private let playerController: PlayerController
     private let mockProviderPipelineController: ProviderPipelineController
@@ -74,7 +74,7 @@ struct MusicFloatApp: App {
             playerController.overlayVisibilityChanged(true, appState: appState)
         } else {
             mockProviderPipelineController.stopHiddenWork(appState: appState)
-            liveProviderPipelineController?.stopHiddenWork(appState: appState)
+            liveProviderPipelineControllerStore.current?.stopHiddenWork(appState: appState)
             playerController.stopMockPreview(appState: appState)
             playerController.overlayVisibilityChanged(false, appState: appState)
             panelController.hide(releaseResources: appState.reduceHiddenMemoryUsage)
@@ -92,7 +92,7 @@ struct MusicFloatApp: App {
     private func toggleLiveAppleMusic() {
         if appState.isLiveModeRunning {
             playerController.stopLiveAppleMusic(appState: appState)
-            liveProviderPipelineController?.stopHiddenWork(appState: appState)
+            liveProviderPipelineControllerStore.current?.stopHiddenWork(appState: appState)
             appState.runtimeFeatureFlags = .architectureDefault
         } else {
             let liveProviderPipelineController = getLiveProviderPipelineController()
@@ -139,7 +139,7 @@ struct MusicFloatApp: App {
     private func quit() {
         AppTelemetry.lifecycle.info("Quit requested from menu bar")
         mockProviderPipelineController.stopHiddenWork(appState: appState)
-        liveProviderPipelineController?.stopHiddenWork(appState: appState)
+        liveProviderPipelineControllerStore.current?.stopHiddenWork(appState: appState)
         playerController.stopMockPreview(appState: appState)
         playerController.stopLiveAppleMusic(appState: appState)
         panelController.hide()
@@ -151,8 +151,17 @@ struct MusicFloatApp: App {
     }
 
     private func getLiveProviderPipelineController() -> ProviderPipelineController {
-        if let liveProviderPipelineController {
-            return liveProviderPipelineController
+        liveProviderPipelineControllerStore.get()
+    }
+}
+
+@MainActor
+private final class LiveProviderPipelineControllerStore {
+    private(set) var current: ProviderPipelineController?
+
+    func get() -> ProviderPipelineController {
+        if let current {
+            return current
         }
 
         let liveAdapters = RuntimeAdapterFactory.makeAdapters(for: .liveAppleMusic)
@@ -160,7 +169,7 @@ struct MusicFloatApp: App {
             lyricsProvider: liveAdapters.lyricsProvider,
             translationProvider: liveAdapters.translationProvider
         )
-        liveProviderPipelineController = controller
+        current = controller
         AppTelemetry.lifecycle.info("Live provider pipeline initialized")
         return controller
     }
