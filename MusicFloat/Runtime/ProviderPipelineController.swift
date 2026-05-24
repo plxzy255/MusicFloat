@@ -3,13 +3,24 @@ import OSLog
 
 @MainActor
 final class ProviderPipelineController {
+    /// Backstop poll cadence in case the AX observer doesn't fire (Music not
+    /// running yet, panel closed, observer attach failed). Push notifications
+    /// from `MusicAppAXObserver` drive the common case at ~event latency.
+    private static let integratedVisibleLyricsRefreshInterval: TimeInterval = 2.0
+    /// Cooldown after an AX-observer-driven refresh, so a burst of
+    /// notifications doesn't translate into a burst of full AX traversals.
+    private static let observerDrivenCooldown: TimeInterval = 0.1
+
     private let lyricsProvider: any LyricsProvider
     private let translationProvider: any TranslationProvider
     private var loadTask: Task<Void, Never>?
+    private var lastIntegratedVisibleLyricsRefresh = Date.distantPast
+    private let axObserver = MusicAppAXObserver()
+    private weak var observedAppState: AppState?
 
     init(
-        lyricsProvider: any LyricsProvider = MockLyricsProvider(),
-        translationProvider: any TranslationProvider = MockTranslationProvider()
+        lyricsProvider: any LyricsProvider,
+        translationProvider: any TranslationProvider
     ) {
         self.lyricsProvider = lyricsProvider
         self.translationProvider = translationProvider
@@ -37,9 +48,14 @@ final class ProviderPipelineController {
                 appState.applyProviderUnavailable()
                 return
             }
+            let requestedTrackID = track.id
 
             let lyricsResult = await lyricsProvider.lyrics(for: track)
             guard !Task.isCancelled else {
+                return
+            }
+            guard appState.playerState.track?.id == requestedTrackID else {
+                AppTelemetry.performance.info("Provider result ignored because live track changed before lyrics completed")
                 return
             }
 
@@ -55,7 +71,124 @@ final class ProviderPipelineController {
         }
     }
 
+    /// Cancels any in-flight load and starts a fresh one. Intended for the
+    /// "track changed" signal in live mode.
+    func refreshOverlayContent(appState: AppState) {
+        loadTask?.cancel()
+        loadTask = nil
+        lastIntegratedVisibleLyricsRefresh = .distantPast
+        prepareOverlayContent(appState: appState)
+    }
+
+    func cancelInFlightLoadPreservingState() {
+        guard loadTask != nil else { return }
+        AppTelemetry.performance.info("Provider pipeline load cancelled because live track payload is empty")
+        loadTask?.cancel()
+        loadTask = nil
+    }
+
+    func refreshIntegratedVisibleLyrics(appState: AppState) {
+        startAXObserverIfNeeded(appState: appState)
+        performIntegratedVisibleLyricsRefresh(
+            appState: appState,
+            minimumInterval: Self.integratedVisibleLyricsRefreshInterval
+        )
+    }
+
+    private func performIntegratedVisibleLyricsRefresh(
+        appState: AppState,
+        minimumInterval: TimeInterval
+    ) {
+        guard appState.isOverlayVisible,
+              appState.isLiveModeRunning else {
+            return
+        }
+
+        let now = Date()
+        guard now.timeIntervalSince(lastIntegratedVisibleLyricsRefresh) >= minimumInterval else {
+            return
+        }
+        lastIntegratedVisibleLyricsRefresh = now
+
+        let current = appState.lyricsDocument
+        if current.source == .lrclib, current.isTimed {
+            // Calibration path: AX gives us ground-truth current line. Align
+            // the LRC clock to it instead of replacing the (multi-line, timed)
+            // document with a single-line scrape.
+            calibrateLRCDocument(current: current, appState: appState)
+            return
+        }
+
+        guard let document = MusicAppLyricsProvider.fetchCurrentVisibleLyricsLineDocument(),
+              document.lines.first?.text != current.lines.first?.text else {
+            return
+        }
+
+        appState.applyLyricsDocument(document)
+        appState.applyProviderReady()
+        AppTelemetry.performance.info("Music.app UI lyric line refreshed")
+    }
+
+    private func calibrateLRCDocument(current: LyricsDocument, appState: AppState) {
+        guard let axText = MusicAppLyricsProvider.fetchCurrentVisibleLyricsLineText() else {
+            return
+        }
+        let elapsed = appState.playerState.elapsedTime
+        guard elapsed > 0 else { return }
+
+        let normalizedAX = Self.normalizeForMatch(axText)
+        guard !normalizedAX.isEmpty else { return }
+
+        let candidates = current.lines.compactMap { line -> (LyricLine, TimeInterval)? in
+            guard let start = line.startTime else { return nil }
+            guard Self.normalizeForMatch(line.text) == normalizedAX else { return nil }
+            return (line, start)
+        }
+        guard let (matched, matchedStart) = candidates.min(by: {
+            abs($0.1 - (elapsed + current.offsetCorrection)) < abs($1.1 - (elapsed + current.offsetCorrection))
+        }) else {
+            return
+        }
+
+        let newOffset = matchedStart - elapsed
+        // Reject implausibly large offsets — usually a chorus-line collision
+        // where the AX text matched the wrong repeat.
+        guard abs(newOffset) <= 10 else {
+            AppTelemetry.performance.info("LRC calibration rejected offset=\(newOffset) line=\"\(matched.text, privacy: .public)\"")
+            return
+        }
+        guard abs(newOffset - current.offsetCorrection) > 0.05 else {
+            return
+        }
+
+        appState.applyLyricsDocument(current.withOffsetCorrection(newOffset))
+        AppTelemetry.performance.info("LRC calibrated offset=\(newOffset) (was \(current.offsetCorrection)) line=\"\(matched.text, privacy: .public)\"")
+    }
+
+    private static func normalizeForMatch(_ value: String) -> String {
+        value
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    private func startAXObserverIfNeeded(appState: AppState) {
+        guard observedAppState !== appState else { return }
+        observedAppState = appState
+        axObserver.start { [weak self, weak appState] in
+            guard let self, let appState else { return }
+            self.performIntegratedVisibleLyricsRefresh(
+                appState: appState,
+                minimumInterval: Self.observerDrivenCooldown
+            )
+        }
+    }
+
     func stopHiddenWork(appState: AppState) {
+        axObserver.stop()
+        observedAppState = nil
+
         guard loadTask != nil else {
             appState.setProviderRuntimeState(.idle)
             return

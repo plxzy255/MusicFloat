@@ -35,7 +35,7 @@ enum RuntimeAdapterFactory {
         case .mock:
             MockLyricsProvider()
         case .publicApple:
-            PublicLyricsProviderPlaceholder()
+            PublicLyricsProvider()
         case .experimental:
             ExperimentalLyricsProviderPlaceholder()
         case .disabled:

@@ -4,14 +4,24 @@ import OSLog
 @MainActor
 final class PlayerController {
     private static let hiddenIdleRefreshInterval: TimeInterval = 60
+    /// How often we re-pull `player position` from Music.app while live and
+    /// playing, to correct any drift that has accumulated since the last
+    /// distributed-notification event.
+    private static let resyncInterval: TimeInterval = 2.0
+    /// Threshold for snapping our interpolated elapsedTime to Music's
+    /// authoritative position. Smaller deltas are ignored so jitter from
+    /// AppleScript's coarse `player position` doesn't fight the smooth tick.
+    private static let resyncSnapThreshold: TimeInterval = 0.35
 
     private let bridge: any MusicAppBridge
     private var refreshTask: Task<Void, Never>?
     private var liveTask: Task<Void, Never>?
-    private var liveBridge: (any MusicAppBridge)?
+    private var liveTickTask: Task<Void, Never>?
+    private var liveBridge: PublicAppleMusicAppBridge?
+    private var liveTickCallback: (@MainActor () -> Void)?
     private let syncEngine = LyricsSyncEngine()
 
-    init(bridge: any MusicAppBridge = MockMusicAppBridge()) {
+    init(bridge: any MusicAppBridge) {
         self.bridge = bridge
     }
 
@@ -19,28 +29,51 @@ final class PlayerController {
 
     /// Starts an event-driven feed from Apple Music's distributed notifications.
     /// Cancels any in-flight mock preview first so the two never compete.
-    func startLiveAppleMusic(appState: AppState) {
+    ///
+    /// - Parameter onTrackChanged: invoked whenever the playing track's
+    ///   identity changes (including the initial prime). Used by the caller
+    ///   to trigger lyrics fetches.
+    func startLiveAppleMusic(
+        appState: AppState,
+        onTrackChanged: (@MainActor (NowPlayingTrack?) -> Void)? = nil,
+        onLiveTick: (@MainActor () -> Void)? = nil
+    ) {
         guard liveTask == nil else { return }
         stopMockPreview(appState: appState)
 
         let bridge = PublicAppleMusicAppBridge()
         liveBridge = bridge
+        liveTickCallback = onLiveTick
         appState.setLiveModeRunning(true)
         AppTelemetry.performance.info("Live Apple Music bridge started")
 
         liveTask = Task { @MainActor [weak self, weak appState] in
             guard let self, let appState else { return }
 
-            // Prime with current state so the overlay reflects what's
-            // already playing instead of waiting for the next event.
             let initial = await bridge.currentState()
+            AppTelemetry.performance.info(
+                "Live prime: status=\(initial.playbackStatus.rawValue, privacy: .public) hasTrack=\(initial.track != nil) elapsed=\(initial.elapsedTime) musicRunning=\(AppleMusicEventListener.isMusicAppRunning)"
+            )
             appState.updatePlayerState(initial)
+            var lastTrackID = initial.track?.id
+            onTrackChanged?(initial.track)
+            self.restartLiveTick(appState: appState, onLiveTick: onLiveTick)
 
             for await state in bridge.events() {
                 if Task.isCancelled { break }
+                AppTelemetry.performance.info(
+                    "Live event: status=\(state.playbackStatus.rawValue, privacy: .public) hasTrack=\(state.track != nil) elapsed=\(state.elapsedTime)"
+                )
                 appState.updatePlayerState(state)
+                if state.track?.id != lastTrackID {
+                    lastTrackID = state.track?.id
+                    onTrackChanged?(state.track)
+                }
+                // Re-sync tick to the fresh elapsedTime from the event so
+                // play/pause/skip doesn't leave the active line behind.
+                self.restartLiveTick(appState: appState, onLiveTick: onLiveTick)
             }
-            _ = self // retain self for the lifetime of the loop
+            _ = self
         }
     }
 
@@ -52,22 +85,115 @@ final class PlayerController {
         AppTelemetry.performance.info("Live Apple Music bridge stopped")
         liveTask?.cancel()
         liveTask = nil
+        liveTickTask?.cancel()
+        liveTickTask = nil
         liveBridge = nil
+        liveTickCallback = nil
         appState?.setLiveModeRunning(false)
     }
 
-    func startMockPreview(appState: AppState) {
-        guard refreshTask == nil else {
+    /// Called by the app when overlay visibility changes so we don't burn
+    /// CPU advancing a clock no one is watching.
+    func overlayVisibilityChanged(_ isVisible: Bool, appState: AppState) {
+        guard liveTask != nil else { return }
+        if isVisible {
+            restartLiveTick(appState: appState, onLiveTick: liveTickCallback)
+        } else {
+            liveTickTask?.cancel()
+            liveTickTask = nil
+        }
+    }
+
+    /// Advances live elapsed time by wall-clock delta while live mode is
+    /// playing and the overlay is visible. Periodically re-pulls `player
+    /// position` from Music.app to correct drift.
+    private func restartLiveTick(
+        appState: AppState,
+        onLiveTick: (@MainActor () -> Void)? = nil
+    ) {
+        liveTickTask?.cancel()
+        liveTickTask = nil
+
+        guard appState.isOverlayVisible,
+              appState.playerState.playbackStatus == .playing,
+              appState.playerState.track != nil else {
             return
         }
+
+        liveTickTask = Task { @MainActor [weak self, weak appState] in
+            guard let self, let appState else { return }
+            var lastWall = Date()
+            var elapsed = appState.playerState.elapsedTime
+            // Start with `lastResync` in the past so the first resync fires
+            // immediately on the next loop iteration. This catches the case
+            // where AppleScript was wedged at event time but recovers by the
+            // time the first tick interval has elapsed.
+            var lastResync = Date(timeIntervalSinceNow: -Self.resyncInterval)
+            var consecutiveResyncFailures = 0
+
+            while !Task.isCancelled {
+                // Sleep until the next lyric line boundary, capped to 1s so
+                // a freshly-loaded lyrics doc is picked up promptly.
+                let document = appState.lyricsDocument
+                let nextStart = self.syncEngine.nextLineStart(
+                    in: document,
+                    after: elapsed + appState.effectiveLyricOffsetSeconds
+                )
+                let targetElapsed = (nextStart.map { $0 - appState.effectiveLyricOffsetSeconds }) ?? (elapsed + 1.0)
+                let sleep = max(0.1, min(1.0, targetElapsed - elapsed))
+                try? await Task.sleep(nanoseconds: UInt64(sleep * 1_000_000_000))
+                if Task.isCancelled { return }
+
+                let now = Date()
+                elapsed += now.timeIntervalSince(lastWall)
+                lastWall = now
+
+                // Periodic resync against Music.app's authoritative position.
+                // When AppleScript has been failing, retry sooner (1s, 3s)
+                // instead of waiting the full 5s interval — drift compounds
+                // quickly if every refining call failed.
+                let resyncDue: TimeInterval = consecutiveResyncFailures > 0
+                    ? min(Self.resyncInterval, 1.0 + Double(consecutiveResyncFailures) * 2.0)
+                    : Self.resyncInterval
+                if now.timeIntervalSince(lastResync) >= resyncDue,
+                   let bridge = self.liveBridge {
+                    lastResync = now
+                    let snapshot = await bridge.currentState()
+                    if Task.isCancelled { return }
+                    if snapshot.track != nil {
+                        consecutiveResyncFailures = 0
+                        if snapshot.playbackStatus == .playing,
+                           snapshot.track?.id == appState.playerState.track?.id,
+                           abs(snapshot.elapsedTime - elapsed) >= Self.resyncSnapThreshold {
+                            AppTelemetry.performance.info(
+                                "Live tick resync delta=\(snapshot.elapsedTime - elapsed) snap=true"
+                            )
+                            elapsed = snapshot.elapsedTime
+                            lastWall = Date()
+                        }
+                    } else {
+                        consecutiveResyncFailures = min(consecutiveResyncFailures + 1, 5)
+                    }
+                }
+
+                guard appState.playerState.playbackStatus == .playing,
+                      appState.playerState.track != nil else { return }
+                appState.updateLiveElapsedTime(elapsed)
+                onLiveTick?()
+            }
+        }
+    }
+
+    // MARK: - Mock Preview
+
+    func startMockPreview(appState: AppState) {
+        guard refreshTask == nil else { return }
         stopLiveAppleMusic(appState: appState)
 
         AppTelemetry.performance.info("Player controller mock preview started")
         appState.setMockPreviewRunning(true)
         refreshTask = Task { @MainActor [weak self, weak appState] in
-            guard let self, let appState else {
-                return
-            }
+            guard let self, let appState else { return }
 
             let initialState = await bridge.currentState()
             appState.updatePlayerState(initialState)
@@ -80,12 +206,10 @@ final class PlayerController {
                     lyricsDocument: appState.lyricsDocument
                 )
                 try? await Task.sleep(nanoseconds: Self.nanoseconds(for: refreshInterval))
-                guard !Task.isCancelled else {
-                    return
-                }
+                guard !Task.isCancelled else { return }
 
                 currentState = playbackClock.tick(by: refreshInterval)
-                appState.updatePlayerState(currentState)
+                appState.updateLiveElapsedTime(currentState.elapsedTime)
             }
         }
     }
@@ -109,14 +233,12 @@ final class PlayerController {
         guard currentState.playbackStatus == .playing else {
             return Self.hiddenIdleRefreshInterval
         }
-
         guard let nextLineStart = syncEngine.nextLineStart(
             in: lyricsDocument,
             after: currentState.elapsedTime
         ) else {
             return Self.hiddenIdleRefreshInterval
         }
-
         return max(0.25, nextLineStart - currentState.elapsedTime)
     }
 

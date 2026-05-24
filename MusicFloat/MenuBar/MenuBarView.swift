@@ -8,9 +8,34 @@ struct MenuBarView: View {
     let toggleOverlay: () -> Void
     let toggleMockPreview: () -> Void
     let toggleLiveAppleMusic: () -> Void
+    let nudgeLyricOffset: (Double) -> Void
+    let resetLyricOffset: () -> Void
+    let clearAllPerTrackOffsets: () -> Void
     let resetMockPlayback: () -> Void
     let setOverlayContentState: (OverlayContentState) -> Void
     let quit: () -> Void
+
+    private var offsetMenuLabel: String {
+        let value = formattedOffset(appState.effectiveLyricOffsetSeconds)
+        switch appState.lyricOffsetScope {
+        case .perTrack: return "\(value), this track"
+        case .global: return "\(value), global"
+        }
+    }
+
+    private func formattedOffset(_ seconds: Double) -> String {
+        let roundedTenths = Int((seconds * 10).rounded())
+        let sign = roundedTenths < 0 ? "-" : "+"
+        let magnitude = abs(roundedTenths)
+        return "\(sign)\(magnitude / 10).\(magnitude % 10)s"
+    }
+
+    private var resetLabel: String {
+        switch appState.lyricOffsetScope {
+        case .perTrack: return "Reset This Track (Use Global)"
+        case .global: return "Reset Global to 0"
+        }
+    }
 
     var body: some View {
         Button(appState.isOverlayVisible ? "Hide Lyrics" : "Show Lyrics") {
@@ -42,6 +67,21 @@ struct MenuBarView: View {
         Button(appState.isLiveModeRunning ? "Stop Listening to Apple Music" : "Listen to Apple Music") {
             AppTelemetry.menuBar.info("Toggle live Apple Music requested running=\(!appState.isLiveModeRunning)")
             toggleLiveAppleMusic()
+        }
+
+        Menu("Lyric Offset (\(offsetMenuLabel))") {
+            Button("Nudge Earlier −0.5s") { nudgeLyricOffset(-0.5) }
+                .keyboardShortcut("[")
+            Button("Nudge Later +0.5s") { nudgeLyricOffset(0.5) }
+                .keyboardShortcut("]")
+            Button("Nudge Earlier −2s") { nudgeLyricOffset(-2.0) }
+            Button("Nudge Later +2s") { nudgeLyricOffset(2.0) }
+            Divider()
+            Button(resetLabel) { resetLyricOffset() }
+            Button("Clear All Per-Track Offsets (\(appState.perTrackOffsets.count))") {
+                clearAllPerTrackOffsets()
+            }
+            .disabled(appState.perTrackOffsets.isEmpty)
         }
 
         Button(appState.isMockPreviewRunning ? "Stop Mock Preview" : "Start Mock Preview") {
@@ -86,6 +126,9 @@ struct MenuBarView: View {
         toggleOverlay: {},
         toggleMockPreview: {},
         toggleLiveAppleMusic: {},
+        nudgeLyricOffset: { _ in },
+        resetLyricOffset: {},
+        clearAllPerTrackOffsets: {},
         resetMockPlayback: {},
         setOverlayContentState: { _ in },
         quit: {}

@@ -71,7 +71,8 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
         lyricsDocument: LyricsDocument,
         translation: LyricTranslation,
         showsTranslation: Bool,
-        widthPreset: OverlayWidthPreset
+        widthPreset: OverlayWidthPreset,
+        lyricOffsetSeconds: Double = 0
     ) -> LyricsOverlaySnapshot {
         let trackText = playerState.track?.displayTitle ?? "Waiting for playback"
 
@@ -107,7 +108,10 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
                 widthPreset: widthPreset
             )
         case .ready:
-            let activeLine = syncEngine.activeLine(in: lyricsDocument, at: playerState.elapsedTime)
+            let activeLine = syncEngine.activeLine(
+                in: lyricsDocument,
+                at: playerState.elapsedTime + lyricOffsetSeconds
+            )
             let lyricText = activeLine?.text ?? "Lyrics unavailable"
             let translationText = activeLine.flatMap { line in
                 showsTranslation ? translation.text(for: line) : nil
@@ -142,10 +146,25 @@ final class AppState {
     var preferredTranslationLanguage: String
     var overlayWidthPreset: OverlayWidthPreset
     var reduceHiddenMemoryUsage: Bool
+    /// Global default offset used when the current track has no remembered
+    /// per-track offset. Positive values advance lyrics; negative delay them.
+    var lyricOffsetSeconds: Double
+    /// Remembered offsets per `NowPlayingTrack.id`. Persisted so once a track
+    /// is tuned, the offset is automatic on next play.
+    private(set) var perTrackOffsets: [String: Double]
+    /// High-frequency elapsed-time updates from the playback tick. Kept
+    /// separate from `playerState` so the menu (which observes only stable
+    /// fields like track/status) doesn't get re-rendered on every tick —
+    /// macOS MenuBarExtra(.menu) re-renders interrupt mouse tracking.
+    private(set) var liveElapsedTime: TimeInterval = 0
+    private(set) var liveElapsedUpdatedAt: Date = .distantPast
 
     private let snapshotBuilder = LyricsOverlaySnapshotBuilder()
+    private let userDefaults: UserDefaults
+    private static let perTrackOffsetsKey = "perTrackLyricOffsets"
 
     init(userDefaults: UserDefaults = .standard) {
+        self.userDefaults = userDefaults
         playerState = MockMusicAppBridge.previewState
         lyricsDocument = MockLyricsProvider.previewDocument
 
@@ -157,17 +176,95 @@ final class AppState {
             rawValue: userDefaults.string(forKey: "overlayWidthPreset") ?? OverlayWidthPreset.medium.rawValue
         ) ?? .medium
         reduceHiddenMemoryUsage = userDefaults.object(forKey: "reduceHiddenMemoryUsage") as? Bool ?? true
+        lyricOffsetSeconds = userDefaults.object(forKey: "lyricOffsetSeconds") as? Double ?? 0
+        perTrackOffsets = (userDefaults.dictionary(forKey: Self.perTrackOffsetsKey) as? [String: Double]) ?? [:]
+        liveElapsedTime = playerState.elapsedTime
+        liveElapsedUpdatedAt = playerState.updatedAt
+    }
+
+    /// Effective offset used for sync — per-track if known, otherwise the
+    /// global default. Computed, not stored, so it tracks player state.
+    var effectiveLyricOffsetSeconds: Double {
+        if let trackID = playerState.track?.id, let perTrack = perTrackOffsets[trackID] {
+            return perTrack
+        }
+        return lyricOffsetSeconds
+    }
+
+    /// Where the current effective offset comes from. Used by the menu so
+    /// the user knows whether their nudge will affect just this track or
+    /// the global default.
+    enum LyricOffsetScope: Equatable {
+        case perTrack(trackID: String)
+        case global
+    }
+
+    var lyricOffsetScope: LyricOffsetScope {
+        if let trackID = playerState.track?.id, perTrackOffsets[trackID] != nil {
+            return .perTrack(trackID: trackID)
+        }
+        return .global
     }
 
     var overlaySnapshot: LyricsOverlaySnapshot {
-        snapshotBuilder.makeSnapshot(
+        // Build an effective PlayerState that substitutes the high-frequency
+        // tick value in for elapsedTime, so the overlay reflects smooth
+        // playback while menu-observed fields stay stable.
+        let effectiveState = PlayerState(
+            playbackStatus: playerState.playbackStatus,
+            track: playerState.track,
+            elapsedTime: liveElapsedTime,
+            updatedAt: liveElapsedUpdatedAt
+        )
+        return snapshotBuilder.makeSnapshot(
             contentState: overlayContentState,
-            playerState: playerState,
+            playerState: effectiveState,
             lyricsDocument: lyricsDocument,
             translation: translation,
             showsTranslation: showsTranslation,
-            widthPreset: overlayWidthPreset
+            widthPreset: overlayWidthPreset,
+            lyricOffsetSeconds: effectiveLyricOffsetSeconds
         )
+    }
+
+    // MARK: - Lyric offset
+
+    /// Nudges the effective offset. If a track is playing, the nudge is
+    /// stored against that track; otherwise it modifies the global default.
+    func nudgeLyricOffset(by delta: Double) {
+        let rounded = { (v: Double) in ((v * 100).rounded() / 100) }
+        if let trackID = playerState.track?.id {
+            let base = perTrackOffsets[trackID] ?? lyricOffsetSeconds
+            let next = rounded(base + delta)
+            perTrackOffsets[trackID] = next
+            userDefaults.set(perTrackOffsets, forKey: Self.perTrackOffsetsKey)
+            AppTelemetry.settings.info("Per-track lyric offset for track set to \(next)")
+        } else {
+            lyricOffsetSeconds = rounded(lyricOffsetSeconds + delta)
+            userDefaults.set(lyricOffsetSeconds, forKey: "lyricOffsetSeconds")
+            AppTelemetry.settings.info("Global lyric offset nudged to \(self.lyricOffsetSeconds)")
+        }
+    }
+
+    /// Clears the per-track offset for the current track (falls back to
+    /// global) if one exists; otherwise resets the global default to 0.
+    func resetLyricOffset() {
+        if let trackID = playerState.track?.id, perTrackOffsets[trackID] != nil {
+            perTrackOffsets.removeValue(forKey: trackID)
+            userDefaults.set(perTrackOffsets, forKey: Self.perTrackOffsetsKey)
+            AppTelemetry.settings.info("Per-track lyric offset cleared")
+        } else {
+            lyricOffsetSeconds = 0
+            userDefaults.set(0, forKey: "lyricOffsetSeconds")
+            AppTelemetry.settings.info("Global lyric offset reset")
+        }
+    }
+
+    /// Wipes every remembered per-track offset. Global stays.
+    func clearAllPerTrackOffsets() {
+        perTrackOffsets.removeAll()
+        userDefaults.set(perTrackOffsets, forKey: Self.perTrackOffsetsKey)
+        AppTelemetry.settings.info("All per-track lyric offsets cleared")
     }
 
     func applyPreferences(
@@ -189,6 +286,17 @@ final class AppState {
 
     func updatePlayerState(_ playerState: PlayerState) {
         self.playerState = playerState
+        // Seed the live tick fields from the authoritative state so
+        // the overlay's elapsed reflects it immediately.
+        liveElapsedTime = playerState.elapsedTime
+        liveElapsedUpdatedAt = playerState.updatedAt
+    }
+
+    /// High-frequency update — does NOT touch `playerState`, so menu/Settings
+    /// observers don't re-evaluate. Called from the playback tick.
+    func updateLiveElapsedTime(_ value: TimeInterval) {
+        liveElapsedTime = value
+        liveElapsedUpdatedAt = Date()
     }
 
     func setProviderRuntimeState(_ state: ProviderRuntimeState) {
@@ -235,7 +343,7 @@ final class AppState {
     }
 
     func resetMockPlayback() {
-        playerState = MockMusicAppBridge.previewState
+        updatePlayerState(MockMusicAppBridge.previewState)
         overlayContentState = .ready
         AppTelemetry.performance.info("Mock playback snapshot reset")
     }

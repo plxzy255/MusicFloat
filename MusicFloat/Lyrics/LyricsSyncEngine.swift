@@ -10,12 +10,13 @@ struct LyricsSyncEngine: Sendable {
             return document.lines.first
         }
 
+        let effective = elapsedTime + document.offsetCorrection
         return document.lines.last { line in
             guard let startTime = line.startTime else {
                 return false
             }
 
-            return startTime <= elapsedTime
+            return startTime <= effective
         }
     }
 
@@ -24,9 +25,11 @@ struct LyricsSyncEngine: Sendable {
             return nil
         }
 
+        let effective = elapsedTime + document.offsetCorrection
         return document.lines
             .compactMap(\.startTime)
-            .filter { $0 > elapsedTime }
+            .filter { $0 > effective }
             .min()
+            .map { $0 - document.offsetCorrection }
     }
 }

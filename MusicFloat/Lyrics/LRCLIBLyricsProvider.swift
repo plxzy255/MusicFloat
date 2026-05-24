@@ -11,8 +11,8 @@ import OSLog
 /// candidate expansion, no scoring tuning. We can add that complexity back if
 /// real-world matching starts missing.
 enum LRCLIBLyricsProvider {
-    private static let requestTimeout: TimeInterval = 8
-    private static let durationMatchWindow: Double = 8
+    private static let requestTimeout: TimeInterval = 4
+    private static let durationMatchWindow: Double = 6
 
     struct Response: Decodable, Sendable {
         let syncedLyrics: String?
@@ -52,6 +52,7 @@ enum LRCLIBLyricsProvider {
         return try await search(
             title: title,
             artist: artist,
+            album: album,
             duration: duration,
             session: session
         )
@@ -92,6 +93,11 @@ enum LRCLIBLyricsProvider {
             plain: decoded.plainLyrics,
             source: .lrclib
         )
+        if doc != nil {
+            AppTelemetry.performance.info(
+                "LRCLIB exact match title=\(title, privacy: .public) artist=\(artist, privacy: .public) duration=\(duration)"
+            )
+        }
         return doc
     }
 
@@ -100,6 +106,7 @@ enum LRCLIBLyricsProvider {
     private static func search(
         title: String,
         artist: String,
+        album: String,
         duration: TimeInterval,
         session: URLSession
     ) async throws -> LyricsDocument? {
@@ -122,9 +129,20 @@ enum LRCLIBLyricsProvider {
         }
 
         let items = try JSONDecoder().decode([SearchItem].self, from: data)
-        guard let best = pickBest(from: items, queryDuration: duration) else {
+        guard let best = pickBest(
+            from: items,
+            queryTitle: title,
+            queryArtist: artist,
+            queryAlbum: album,
+            queryDuration: duration
+        ) else {
             return nil
         }
+        // Surface what search fallback chose — common cause of bad-timing
+        // matches is the picker grabbing a different upload of the song.
+        AppTelemetry.performance.info(
+            "LRCLIB search fallback chose title=\(best.trackName ?? "?", privacy: .public) artist=\(best.artistName ?? "?", privacy: .public) album=\(best.albumName ?? "?", privacy: .public) duration=\(best.duration ?? 0) queryDuration=\(duration) candidates=\(items.count)"
+        )
         return LyricsParser.parse(
             synced: best.syncedLyrics,
             plain: best.plainLyrics,
@@ -132,25 +150,93 @@ enum LRCLIBLyricsProvider {
         )
     }
 
-    /// Prefer items that have synced lyrics and a close duration match.
-    private static func pickBest(from items: [SearchItem], queryDuration: Double) -> SearchItem? {
+    /// Prefer items that have synced lyrics, close metadata, and a close
+    /// duration. Reject weak timed matches rather than showing synced lyrics
+    /// that look authoritative but drift badly.
+    private static func pickBest(
+        from items: [SearchItem],
+        queryTitle: String,
+        queryArtist: String,
+        queryAlbum: String,
+        queryDuration: Double
+    ) -> SearchItem? {
+        let normalizedTitle = normalizedSearchText(queryTitle)
+        let normalizedArtist = normalizedSearchText(queryArtist)
+        let normalizedAlbum = normalizedSearchText(queryAlbum)
+
         let viable = items.filter { item in
             let hasSynced = (item.syncedLyrics?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
             let hasPlain = (item.plainLyrics?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
-            return hasSynced || hasPlain
+            guard hasSynced || hasPlain else { return false }
+            guard titleScore(item.trackName, query: normalizedTitle) >= 0.75 else { return false }
+            guard artistScore(item.artistName, query: normalizedArtist) >= 0.5 else { return false }
+            if hasSynced, queryDuration > 0, let d = item.duration, d > 0 {
+                return abs(d - queryDuration) <= durationMatchWindow
+            }
+            return true
         }
         guard !viable.isEmpty else { return nil }
 
         func score(_ item: SearchItem) -> Double {
             var s = 0.0
-            if item.syncedLyrics?.isEmpty == false { s += 1.0 }
+            if item.syncedLyrics?.isEmpty == false { s += 4.0 }
+            s += titleScore(item.trackName, query: normalizedTitle) * 3.0
+            s += artistScore(item.artistName, query: normalizedArtist) * 2.0
+            s += albumScore(item.albumName, query: normalizedAlbum)
             if queryDuration > 0, let d = item.duration, d > 0 {
                 let delta = abs(d - queryDuration)
-                s += max(0, 1.0 - min(delta, durationMatchWindow) / durationMatchWindow)
+                s += max(0, 2.0 - min(delta, durationMatchWindow) / durationMatchWindow * 2.0)
             }
             return s
         }
 
         return viable.max { score($0) < score($1) }
+    }
+
+    private static func normalizedSearchText(_ value: String?) -> String {
+        guard let value else { return "" }
+        let withoutParentheticals = value.replacing(
+            /\s*[\(\[].*?[\)\]]\s*/,
+            with: " "
+        )
+        let folded = withoutParentheticals
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+        return folded
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    private static func titleScore(_ candidate: String?, query: String) -> Double {
+        let candidate = normalizedSearchText(candidate)
+        guard !candidate.isEmpty, !query.isEmpty else { return 0 }
+        if candidate == query { return 1.0 }
+        if candidate.contains(query) || query.contains(candidate) { return 0.85 }
+        return tokenOverlap(candidate, query)
+    }
+
+    private static func artistScore(_ candidate: String?, query: String) -> Double {
+        let candidate = normalizedSearchText(candidate)
+        guard !candidate.isEmpty, !query.isEmpty else { return 0 }
+        if candidate == query { return 1.0 }
+        if candidate.contains(query) || query.contains(candidate) { return 0.75 }
+        return tokenOverlap(candidate, query)
+    }
+
+    private static func albumScore(_ candidate: String?, query: String) -> Double {
+        guard !query.isEmpty else { return 0 }
+        let candidate = normalizedSearchText(candidate)
+        guard !candidate.isEmpty else { return 0 }
+        if candidate == query { return 1.0 }
+        if candidate.contains(query) || query.contains(candidate) { return 0.75 }
+        return tokenOverlap(candidate, query) * 0.75
+    }
+
+    private static func tokenOverlap(_ lhs: String, _ rhs: String) -> Double {
+        let left = Set(lhs.split(separator: " "))
+        let right = Set(rhs.split(separator: " "))
+        guard !left.isEmpty, !right.isEmpty else { return 0 }
+        let shared = left.intersection(right).count
+        return Double(shared) / Double(max(left.count, right.count))
     }
 }
