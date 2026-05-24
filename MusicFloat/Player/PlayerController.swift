@@ -69,9 +69,11 @@ final class PlayerController {
                 let isSameTrack = incomingTrackID != nil && incomingTrackID == previousTrackID
                 let previousEffectiveElapsed = appState.effectiveElapsedTime
                 let eventDelta = state.elapsedTime - previousEffectiveElapsed
-                AppTelemetry.performance.info(
-                    "Live event: status=\(state.playbackStatus.rawValue, privacy: .public) trackID=\(incomingTrackID ?? "nil", privacy: .public) elapsed=\(state.elapsedTime) previousElapsed=\(previousEffectiveElapsed) delta=\(eventDelta)"
-                )
+                if AppTelemetry.isVerbosePlaybackTelemetryEnabled {
+                    AppTelemetry.performance.debug(
+                        "Live event: status=\(state.playbackStatus.rawValue, privacy: .public) trackID=\(incomingTrackID ?? "nil", privacy: .public) elapsed=\(state.elapsedTime) previousElapsed=\(previousEffectiveElapsed) delta=\(eventDelta)"
+                    )
+                }
                 if isSameTrack, abs(eventDelta) > Self.seekDetectionThreshold {
                     AppTelemetry.performance.info(
                         "SEEK_DETECTED source=playerInfoEvent trackID=\(incomingTrackID ?? "nil", privacy: .public) previousElapsed=\(previousEffectiveElapsed) incomingElapsed=\(state.elapsedTime) delta=\(eventDelta)"
@@ -79,6 +81,9 @@ final class PlayerController {
                 }
                 appState.updatePlayerState(state)
                 if state.track?.id != lastTrackID {
+                    AppTelemetry.performance.info(
+                        "Live track changed previousTrackID=\(lastTrackID ?? "nil", privacy: .public) nextTrackID=\(state.track?.id ?? "nil", privacy: .public)"
+                    )
                     lastTrackID = state.track?.id
                     onTrackChanged?(state.track)
                 }
@@ -160,9 +165,11 @@ final class PlayerController {
                 let now = Date()
                 elapsed += now.timeIntervalSince(lastWall)
                 lastWall = now
-                AppTelemetry.performance.info(
-                    "Live tick localElapsed=\(elapsed) snapshotElapsed=nil delta=nil snap=false"
-                )
+                if AppTelemetry.isVerbosePlaybackTelemetryEnabled {
+                    AppTelemetry.performance.debug(
+                        "Live tick localElapsed=\(elapsed) snapshotElapsed=nil delta=nil snap=false"
+                    )
+                }
 
                 // Periodic watchdog against Music.app's authoritative position.
                 // While the overlay is visible this is frequent enough to catch
@@ -182,9 +189,11 @@ final class PlayerController {
                         let shouldSnap = snapshot.playbackStatus == .playing
                             && isSameTrack
                             && abs(snapshotDelta) >= Self.resyncSnapThreshold
-                        AppTelemetry.performance.info(
-                            "Live tick watchdog localElapsed=\(elapsed) snapshotElapsed=\(snapshot.elapsedTime) delta=\(snapshotDelta) sameTrack=\(isSameTrack) snap=\(shouldSnap)"
-                        )
+                        if shouldSnap || AppTelemetry.isVerbosePlaybackTelemetryEnabled {
+                            AppTelemetry.performance.info(
+                                "Live tick watchdog localElapsed=\(elapsed) snapshotElapsed=\(snapshot.elapsedTime) delta=\(snapshotDelta) sameTrack=\(isSameTrack) snap=\(shouldSnap)"
+                            )
+                        }
                         if shouldSnap {
                             if abs(snapshotDelta) > Self.seekDetectionThreshold {
                                 AppTelemetry.performance.info(
@@ -200,9 +209,11 @@ final class PlayerController {
                         }
                     } else {
                         consecutiveResyncFailures = min(consecutiveResyncFailures + 1, 5)
-                        AppTelemetry.performance.info(
-                            "Live tick watchdog snapshot missing failures=\(consecutiveResyncFailures)"
-                        )
+                        if AppTelemetry.isVerbosePlaybackTelemetryEnabled {
+                            AppTelemetry.performance.debug(
+                                "Live tick watchdog snapshot missing failures=\(consecutiveResyncFailures)"
+                            )
+                        }
                     }
                 }
 

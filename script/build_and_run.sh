@@ -2,6 +2,13 @@
 set -euo pipefail
 
 MODE="${1:-run}"
+if [[ $# -gt 0 ]]; then
+  shift
+fi
+if [[ "${1:-}" == "--" ]]; then
+  shift
+fi
+APP_ARGS=("$@")
 APP_NAME="MusicFloat"
 BUNDLE_ID="cv.MusicFloat"
 PROJECT="MusicFloat.xcodeproj"
@@ -11,7 +18,7 @@ DERIVED_DATA_DIR="${DERIVED_DATA_DIR:-$PWD/.codex/DerivedData}"
 APP_BUNDLE="$DERIVED_DATA_DIR/Build/Products/$CONFIGURATION/$APP_NAME.app"
 
 usage() {
-  echo "usage: $0 [run|--debug|--logs|--telemetry|--verify|--memory]" >&2
+  echo "usage: $0 [run|--debug|--logs|--telemetry|--verify|--memory] [-- app args]" >&2
 }
 
 stop_app() {
@@ -38,7 +45,11 @@ build_app() {
 }
 
 open_app() {
-  /usr/bin/open -n "$APP_BUNDLE"
+  if [[ ${#APP_ARGS[@]} -gt 0 ]]; then
+    /usr/bin/open -n "$APP_BUNDLE" --args "${APP_ARGS[@]}"
+  else
+    /usr/bin/open -n "$APP_BUNDLE"
+  fi
 }
 
 wait_for_pid() {

@@ -82,9 +82,11 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
 
                 for await playerInfoEvent in stream {
                     let event = playerInfoEvent.state
-                    AppTelemetry.performance.info(
-                        "playerInfo raw=\(playerInfoEvent.rawSummary, privacy: .public) parsedTrackID=\(event.track?.id ?? "nil", privacy: .public) parsedElapsed=\(event.elapsedTime)"
-                    )
+                    if AppTelemetry.isVerbosePlaybackTelemetryEnabled {
+                        AppTelemetry.performance.debug(
+                            "playerInfo raw=\(playerInfoEvent.rawSummary, privacy: .public) parsedTrackID=\(event.track?.id ?? "nil", privacy: .public) parsedElapsed=\(event.elapsedTime)"
+                        )
+                    }
                     // Notifications do not carry `player position`. Refine with
                     // AppleScript only when the snapshot agrees with the event
                     // track; during skips Music.app can briefly report the old
@@ -127,9 +129,11 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
                     )
                     let refined = refinedEvent.state
 
-                    AppTelemetry.performance.info(
-                        "playerInfo refined trackID=\(refined.track?.id ?? "nil", privacy: .public) elapsed=\(refined.elapsedTime) refineOK=\(refinedEvent.refineSucceeded)"
-                    )
+                    if AppTelemetry.isVerbosePlaybackTelemetryEnabled {
+                        AppTelemetry.performance.debug(
+                            "playerInfo refined trackID=\(refined.track?.id ?? "nil", privacy: .public) elapsed=\(refined.elapsedTime) refineOK=\(refinedEvent.refineSucceeded)"
+                        )
+                    }
                     continuation.yield(refined)
                     lastEmittedState = refined
                     lastEmittedAt = Date()

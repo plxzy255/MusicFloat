@@ -27,46 +27,50 @@ final class ProviderPipelineController {
     }
 
     func prepareOverlayContent(appState: AppState) {
-        guard loadTask == nil else {
-            return
-        }
-
-        AppTelemetry.performance.info("Provider pipeline mock load started")
-        appState.setProviderRuntimeState(.loading)
-        appState.setOverlayContentState(.loading)
-
-        loadTask = Task { @MainActor [weak self, weak appState] in
-            guard let self, let appState else {
+        AppTelemetry.measure("ProviderPipelineController.prepareOverlayContent") {
+            guard loadTask == nil else {
                 return
             }
 
-            defer {
-                self.loadTask = nil
-            }
+            AppTelemetry.performance.info("Provider pipeline load started")
+            appState.setProviderRuntimeState(.loading)
+            appState.setOverlayContentState(.loading)
 
-            guard let track = appState.playerState.track else {
-                appState.applyProviderUnavailable()
-                return
-            }
-            let requestedTrackID = track.id
+            loadTask = Task { @MainActor [weak self, weak appState] in
+                await AppTelemetry.measure("ProviderPipelineController.prepareOverlayContent.load") {
+                    guard let self, let appState else {
+                        return
+                    }
 
-            let lyricsResult = await lyricsProvider.lyrics(for: track)
-            guard !Task.isCancelled else {
-                return
-            }
-            guard appState.playerState.track?.id == requestedTrackID else {
-                AppTelemetry.performance.info("Provider result ignored because live track changed before lyrics completed")
-                return
-            }
+                    defer {
+                        self.loadTask = nil
+                    }
 
-            switch lyricsResult {
-            case .available(let document):
-                appState.applyLyricsDocument(document)
-                await loadTranslation(for: document, appState: appState)
-            case .unavailable:
-                appState.applyProviderUnavailable()
-            case .failed(let message):
-                appState.applyProviderFailure(message)
+                    guard let track = appState.playerState.track else {
+                        appState.applyProviderUnavailable()
+                        return
+                    }
+                    let requestedTrackID = track.id
+
+                    let lyricsResult = await self.lyricsProvider.lyrics(for: track)
+                    guard !Task.isCancelled else {
+                        return
+                    }
+                    guard appState.playerState.track?.id == requestedTrackID else {
+                        AppTelemetry.performance.info("Provider result ignored because live track changed before lyrics completed")
+                        return
+                    }
+
+                    switch lyricsResult {
+                    case .available(let document):
+                        appState.applyLyricsDocument(document)
+                        await self.loadTranslation(for: document, appState: appState)
+                    case .unavailable:
+                        appState.applyProviderUnavailable()
+                    case .failed(let message):
+                        appState.applyProviderFailure(message)
+                    }
+                }
             }
         }
     }
@@ -89,6 +93,11 @@ final class ProviderPipelineController {
             AppTelemetry.performance.info("Live provider refresh skipped for empty track payload")
             return
         }
+        guard appState.isOverlayVisible || appState.runtimeFeatureFlags.allowsHiddenProviderRefresh else {
+            cancelInFlightLoadPreservingState()
+            AppTelemetry.performance.info("Live track refresh deferred while overlay hidden")
+            return
+        }
         refreshOverlayContent(appState: appState)
     }
 
@@ -100,6 +109,12 @@ final class ProviderPipelineController {
     }
 
     func refreshIntegratedVisibleLyrics(appState: AppState) {
+        guard appState.isOverlayVisible,
+              appState.isLiveModeRunning else {
+            axObserver.stop()
+            observedAppState = nil
+            return
+        }
         startAXObserverIfNeeded(appState: appState)
         performIntegratedVisibleLyricsRefresh(
             appState: appState,
@@ -123,7 +138,7 @@ final class ProviderPipelineController {
         lastIntegratedVisibleLyricsRefresh = now
 
         let current = appState.lyricsDocument
-        if current.source == .appleMusicWeb, current.isTimed {
+        if Self.skipsIntegratedVisibleLyricsRefresh(for: current) {
             // Authoritative timed document straight from Apple. Do not
             // overwrite with a lagging AX scrape and do not calibrate —
             // the TTML clock IS ground truth here.
@@ -201,6 +216,10 @@ final class ProviderPipelineController {
         }
 
         return current.withOffsetCorrection(newOffset)
+    }
+
+    static func skipsIntegratedVisibleLyricsRefresh(for document: LyricsDocument) -> Bool {
+        document.source == .appleMusicWeb && document.isTimed
     }
 
     private static func normalizeForMatch(_ value: String) -> String {

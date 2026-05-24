@@ -37,6 +37,24 @@ enum LRCLIBLyricsProvider {
         duration: TimeInterval,
         session: URLSession = .shared
     ) async throws -> LyricsDocument? {
+        try await AppTelemetry.measure("LRCLIBLyricsProvider.fetch") {
+            try await fetchImpl(
+                title: title,
+                artist: artist,
+                album: album,
+                duration: duration,
+                session: session
+            )
+        }
+    }
+
+    private static func fetchImpl(
+        title: String,
+        artist: String,
+        album: String,
+        duration: TimeInterval,
+        session: URLSession
+    ) async throws -> LyricsDocument? {
         guard !title.isEmpty, !artist.isEmpty else { return nil }
 
         if let exact = try await fetchExact(

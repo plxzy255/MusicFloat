@@ -10,6 +10,12 @@ import Foundation
 /// Time values come in any of: `HH:MM:SS.mmm`, `MM:SS.mmm`, `SS.mmm`, `Ns`.
 enum TTMLParser {
     static func parse(ttml: String, source: LyricsSource = .appleMusicWeb) -> LyricsDocument? {
+        AppTelemetry.measure("TTMLParser.parse") {
+            parseImpl(ttml: ttml, source: source)
+        }
+    }
+
+    private static func parseImpl(ttml: String, source: LyricsSource) -> LyricsDocument? {
         guard let data = ttml.data(using: .utf8) else { return nil }
         let delegate = Delegate()
         let parser = XMLParser(data: data)
