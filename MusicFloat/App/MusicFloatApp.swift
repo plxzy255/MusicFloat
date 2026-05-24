@@ -25,14 +25,9 @@ struct MusicFloatApp: App {
         AppTelemetry.lifecycle.info("MusicFloat app initialized")
 
         if CommandLine.arguments.contains("--demo") {
-            AppTelemetry.lifecycle.info("Demo mode requested via launch argument")
-            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(800)) { [self] in
-                guard !appState.isOverlayVisible else { return }
-                appState.isOverlayVisible = true
-                playerController.startMockPreview(appState: appState)
-                activeProviderPipelineController.prepareOverlayContent(appState: appState)
-                panelController.show(appState: appState)
-                playerController.overlayVisibilityChanged(true, appState: appState)
+            AppTelemetry.lifecycle.info("Demo mode requested — auto-starting overlay with mock preview in 500ms")
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) { [self] in
+                toggleOverlay()
             }
         }
     }
