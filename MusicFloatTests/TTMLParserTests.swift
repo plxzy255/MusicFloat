@@ -108,7 +108,7 @@ final class TTMLParserTests: XCTestCase {
     }
 
     @MainActor
-    func testWordTimedParentheticalAdlibSticksToPreviousWord() {
+    func testWordTimedParentheticalAdlibSeparatesFromPreviousWord() {
         let ttml = """
         <?xml version="1.0" encoding="UTF-8"?>
         <tt xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Word">
@@ -124,9 +124,9 @@ final class TTMLParserTests: XCTestCase {
 
         let document = TTMLParser.parse(ttml: ttml)
 
-        XCTAssertEqual(document?.lines.first?.text, "out(Yeah) Brooklyn")
+        XCTAssertEqual(document?.lines.first?.text, "out (Yeah) Brooklyn")
         XCTAssertEqual(document?.lines.first?.syllables.map(\.text), [
-            "out",
+            "out ",
             "(Yeah) ",
             "Brooklyn"
         ])

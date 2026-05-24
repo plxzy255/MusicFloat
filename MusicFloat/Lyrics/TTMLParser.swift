@@ -188,7 +188,7 @@ enum TTMLParser {
                 return false
             }
 
-            return previous.shouldSpaceBeforeNextWord && current.canStartInferredWord
+            return previous.shouldSpaceBeforeNextWord && current.canStartInferredWordLikeSpan
         }
 
         private func appendSpaceToPreviousSyllable() {
@@ -250,9 +250,9 @@ enum TTMLParser {
 }
 
 private extension Character {
-    var canStartInferredWord: Bool {
+    var canStartInferredWordLikeSpan: Bool {
         guard unicodeScalars.allSatisfy(\.isASCII) else { return false }
-        return isLetter || isNumber
+        return isLetter || isNumber || self == "("
     }
 
     var shouldSpaceBeforeNextWord: Bool {
