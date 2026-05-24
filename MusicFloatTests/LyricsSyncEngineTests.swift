@@ -87,6 +87,65 @@ final class LyricsSyncEngineTests: XCTestCase {
     }
 
     @MainActor
+    func testNextSyllableBoundaryReturnsUpcomingWordEdge() {
+        let document = LyricsDocument(
+            source: .appleMusicWeb,
+            lines: [
+                LyricLine(
+                    id: 0,
+                    text: "first line",
+                    startTime: 10,
+                    endTime: 12,
+                    syllables: [
+                        LyricSyllable(text: "first ", startTime: 10, endTime: 10.4),
+                        LyricSyllable(text: "line", startTime: 10.4, endTime: 11)
+                    ]
+                )
+            ],
+            isTimed: true
+        )
+
+        XCTAssertEqual(LyricsSyncEngine().nextSyllableBoundary(in: document, after: 10.2), 10.4)
+        XCTAssertEqual(LyricsSyncEngine().nextSyllableBoundary(in: document, after: 10.4), 11)
+    }
+
+    @MainActor
+    func testNextSyllableBoundaryRespectsOffsetCorrection() {
+        let document = LyricsDocument(
+            source: .appleMusicWeb,
+            lines: [
+                LyricLine(
+                    id: 0,
+                    text: "offset line",
+                    startTime: 10,
+                    syllables: [
+                        LyricSyllable(text: "offset ", startTime: 10, endTime: 10.5),
+                        LyricSyllable(text: "line", startTime: 10.5, endTime: 11)
+                    ]
+                )
+            ],
+            isTimed: true,
+            offsetCorrection: 2
+        )
+
+        XCTAssertEqual(LyricsSyncEngine().nextSyllableBoundary(in: document, after: 8.2), 8.5)
+    }
+
+    @MainActor
+    func testNextSyllableBoundaryReturnsNilForLineTimedDocument() {
+        let document = LyricsDocument(
+            source: .lrclib,
+            lines: [
+                LyricLine(id: 0, text: "first", startTime: 10),
+                LyricLine(id: 1, text: "second", startTime: 12)
+            ],
+            isTimed: true
+        )
+
+        XCTAssertNil(LyricsSyncEngine().nextSyllableBoundary(in: document, after: 10))
+    }
+
+    @MainActor
     func testLRCLIBCalibrationUsesEffectiveElapsedForOffset() {
         let document = LyricsDocument(
             source: .lrclib,
