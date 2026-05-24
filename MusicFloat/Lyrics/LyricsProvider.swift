@@ -45,15 +45,73 @@ struct MockLyricsProvider: LyricsProvider {
 final class PublicLyricsProvider: LyricsProvider {
     let displayName = "Public lyrics provider"
 
+    struct Dependencies {
+        var fetchAppleScriptLyrics: @MainActor () -> LyricsDocument?
+        var requiresAccessibilityPermission: @MainActor () -> Bool
+        var hasAccessibilityPermission: @MainActor () -> Bool
+        var shouldRetryVisibleLyrics: @MainActor () -> Bool
+        var isMediaUserTokenConfigured: @MainActor () -> Bool
+        var fetchAppleMusicWebLyrics: @MainActor (NowPlayingTrack) async throws -> LyricsDocument?
+        var isLRCLIBFallbackEnabled: @MainActor () -> Bool
+        var fetchLRCLIBLyrics: @MainActor (NowPlayingTrack) async throws -> LyricsDocument?
+        var fetchAXLyrics: @MainActor () -> LyricsDocument?
+        var sleep: @MainActor (UInt64) async throws -> Void
+
+        static func live(appleMusicWeb: AppleMusicWebLyricsProvider) -> Self {
+            Self(
+                fetchAppleScriptLyrics: {
+                    MusicAppLyricsProvider.fetchCurrentTrackLyrics()
+                },
+                requiresAccessibilityPermission: {
+                    MusicAppLyricsProvider.requiresAccessibilityPermission
+                },
+                hasAccessibilityPermission: {
+                    MusicAppLyricsProvider.hasAccessibilityPermission
+                },
+                shouldRetryVisibleLyrics: {
+                    MusicAppLyricsProvider.shouldRetryVisibleLyrics
+                },
+                isMediaUserTokenConfigured: {
+                    MediaUserTokenStore.isConfigured
+                },
+                fetchAppleMusicWebLyrics: { track in
+                    try await appleMusicWeb.lyrics(for: track)
+                },
+                isLRCLIBFallbackEnabled: {
+                    UserDefaults.standard.object(forKey: "lrclibFallbackEnabled") as? Bool ?? true
+                },
+                fetchLRCLIBLyrics: { track in
+                    try await LRCLIBLyricsProvider.fetch(
+                        title: track.title,
+                        artist: track.artist,
+                        album: track.album,
+                        duration: track.duration
+                    )
+                },
+                fetchAXLyrics: {
+                    MusicAppLyricsProvider.fetchCurrentVisibleLyricsLineDocument()
+                },
+                sleep: { nanoseconds in
+                    try await Task.sleep(nanoseconds: nanoseconds)
+                }
+            )
+        }
+    }
+
     private var memoryCache: [String: LyricsDocument] = [:]
     private let maxCacheEntries = 64
     private var cacheOrder: [String] = []
     private let appleMusicWeb = AppleMusicWebLyricsProvider()
+    private let dependencies: Dependencies
+
+    init(dependencies: Dependencies? = nil) {
+        self.dependencies = dependencies ?? Dependencies.live(appleMusicWeb: appleMusicWeb)
+    }
 
     /// When false, only AppleScript library + Apple Music web API are
     /// consulted. UserDefaults-backed so the setting persists.
     var lrclibFallbackEnabled: Bool {
-        UserDefaults.standard.object(forKey: "lrclibFallbackEnabled") as? Bool ?? true
+        dependencies.isLRCLIBFallbackEnabled()
     }
 
     func lyrics(for track: NowPlayingTrack) async -> LyricsProviderResult {
@@ -71,7 +129,7 @@ final class PublicLyricsProvider: LyricsProvider {
         // case, so we'd short-circuit every catalog-track lookup before the
         // web API ever runs. Filter strictly to canonical `.musicApp`
         // results; AX is reconsidered at the end of the pipeline.
-        let appleScriptDoc = MusicAppLyricsProvider.fetchCurrentTrackLyrics()
+        let appleScriptDoc = dependencies.fetchAppleScriptLyrics()
         if let doc = appleScriptDoc, doc.source == .musicApp {
             if shouldCache(document: doc) {
                 store(doc, for: track.id)
@@ -79,16 +137,14 @@ final class PublicLyricsProvider: LyricsProvider {
             AppTelemetry.performance.info("Lyrics hit \(doc.source.rawValue, privacy: .public) timed=\(doc.isTimed) lines=\(doc.lines.count)")
             return .available(doc)
         }
-        if MusicAppLyricsProvider.requiresAccessibilityPermission {
-            return .failed("Allow MusicFloat in Privacy & Security > Accessibility to use Music lyrics.")
-        }
+        let axPermissionWasNeeded = dependencies.requiresAccessibilityPermission()
 
         // 2) Apple Music web API — millisecond-accurate TTML straight from
         // Apple. Only runs when the user has pasted their media-user-token
         // in Settings.
-        if MediaUserTokenStore.isConfigured {
+        if dependencies.isMediaUserTokenConfigured() {
             do {
-                if let doc = try await appleMusicWeb.lyrics(for: track) {
+                if let doc = try await dependencies.fetchAppleMusicWebLyrics(track) {
                     store(doc, for: track.id)
                     AppTelemetry.performance.info("Lyrics hit appleMusicWeb timed=\(doc.isTimed) lines=\(doc.lines.count)")
                     return .available(doc)
@@ -112,12 +168,7 @@ final class PublicLyricsProvider: LyricsProvider {
         // we can show a full timed document. Calibration against the Music UI
         // happens later in the refresh tick.
         do {
-            if let doc = try await LRCLIBLyricsProvider.fetch(
-                title: track.title,
-                artist: track.artist,
-                album: track.album,
-                duration: track.duration
-            ) {
+            if let doc = try await dependencies.fetchLRCLIBLyrics(track) {
                 if doc.isTimed {
                     store(doc, for: track.id)
                     AppTelemetry.performance.info("Lyrics hit lrclib timed=true lines=\(doc.lines.count)")
@@ -125,7 +176,8 @@ final class PublicLyricsProvider: LyricsProvider {
                 }
                 // Untimed LRCLIB — keep as fallback, but try AX first so we
                 // at least get the live highlighted line if the panel is open.
-                if let axDoc = MusicAppLyricsProvider.fetchCurrentVisibleLyricsLineDocument() {
+                if dependencies.hasAccessibilityPermission(),
+                   let axDoc = dependencies.fetchAXLyrics() {
                     AppTelemetry.performance.info("Lyrics hit musicAppUI (LRCLIB plain ignored) lines=\(axDoc.lines.count)")
                     return .available(axDoc)
                 }
@@ -140,26 +192,33 @@ final class PublicLyricsProvider: LyricsProvider {
         }
 
         // 4) AX panel — final catalog fallback when LRCLIB has nothing.
-        if let axDoc = MusicAppLyricsProvider.fetchCurrentVisibleLyricsLineDocument() {
-            AppTelemetry.performance.info("Lyrics hit \(axDoc.source.rawValue, privacy: .public) timed=\(axDoc.isTimed) lines=\(axDoc.lines.count)")
-            return .available(axDoc)
-        }
-        if MusicAppLyricsProvider.shouldRetryVisibleLyrics {
-            for _ in 1...6 {
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                guard !Task.isCancelled else {
-                    return .unavailable
-                }
-                if let doc = MusicAppLyricsProvider.fetchCurrentVisibleLyricsLineDocument() {
-                    AppTelemetry.performance.info("Lyrics hit \(doc.source.rawValue, privacy: .public) timed=\(doc.isTimed) lines=\(doc.lines.count)")
-                    return .available(doc)
-                }
+        if dependencies.hasAccessibilityPermission() {
+            if let axDoc = dependencies.fetchAXLyrics() {
+                AppTelemetry.performance.info("Lyrics hit \(axDoc.source.rawValue, privacy: .public) timed=\(axDoc.isTimed) lines=\(axDoc.lines.count)")
+                return .available(axDoc)
             }
-            AppTelemetry.performance.info("Music.app UI lyrics still loading; no LRCLIB match")
+            if dependencies.shouldRetryVisibleLyrics() {
+                for _ in 1...6 {
+                    try? await dependencies.sleep(500_000_000)
+                    guard !Task.isCancelled else {
+                        return .unavailable
+                    }
+                    if let doc = dependencies.fetchAXLyrics() {
+                        AppTelemetry.performance.info("Lyrics hit \(doc.source.rawValue, privacy: .public) timed=\(doc.isTimed) lines=\(doc.lines.count)")
+                        return .available(doc)
+                    }
+                }
+                AppTelemetry.performance.info("Music.app UI lyrics still loading; no LRCLIB match")
+            }
+        } else if axPermissionWasNeeded || appleScriptDoc?.source == .musicAppUI {
+            return .failed(Self.accessibilityPermissionMessage)
         }
 
         return .unavailable
     }
+
+    private static let accessibilityPermissionMessage =
+        "Allow MusicFloat in Privacy & Security > Accessibility to use Music lyrics."
 
     private func store(_ document: LyricsDocument, for key: String) {
         if memoryCache[key] == nil {

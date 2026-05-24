@@ -85,4 +85,25 @@ final class LyricsSyncEngineTests: XCTestCase {
 
         XCTAssertNil(LyricsSyncEngine().nextLineStart(in: document, after: 0))
     }
+
+    @MainActor
+    func testLRCLIBCalibrationUsesEffectiveElapsedForOffset() {
+        let document = LyricsDocument(
+            source: .lrclib,
+            lines: [
+                LyricLine(id: 0, text: "first", startTime: 10),
+                LyricLine(id: 1, text: "matched line", startTime: 45),
+                LyricLine(id: 2, text: "later", startTime: 80)
+            ],
+            isTimed: true
+        )
+
+        let calibrated = ProviderPipelineController.calibratedLRCDocument(
+            current: document,
+            visibleLineText: "Matched Line",
+            elapsed: 42
+        )
+
+        XCTAssertEqual(calibrated?.offsetCorrection, 3)
+    }
 }

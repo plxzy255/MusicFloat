@@ -110,10 +110,11 @@ enum TTMLParser {
                     pSpans.append(LyricSyllable(text: spanText, startTime: begin, endTime: end))
                 }
                 // Spans inside <p> together form the line text. Keep a
-                // raw-spaced reconstruction so we don't have to re-glue them.
+                // raw reconstruction so syllable fragments can join without
+                // invented spaces while source-provided spacing is preserved.
                 if !pSpans.isEmpty || pText.isEmpty {
-                    if !pText.isEmpty, !pText.hasSuffix(" "), !spanText.hasPrefix(" ") {
-                        pText += " "
+                    if pText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        pText = ""
                     }
                     pText += spanText
                 }

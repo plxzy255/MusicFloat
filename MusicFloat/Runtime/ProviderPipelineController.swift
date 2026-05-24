@@ -121,7 +121,10 @@ final class ProviderPipelineController {
             // Calibration path: AX gives us ground-truth current line. Align
             // the LRC clock to it instead of replacing the (multi-line, timed)
             // document with a single-line scrape.
-            calibrateLRCDocument(current: current, appState: appState)
+            guard let axText = MusicAppLyricsProvider.fetchCurrentVisibleLyricsLineText() else {
+                return
+            }
+            calibrateLRCDocument(current: current, visibleLineText: axText, appState: appState)
             return
         }
 
@@ -135,15 +138,33 @@ final class ProviderPipelineController {
         AppTelemetry.performance.info("Music.app UI lyric line refreshed")
     }
 
-    private func calibrateLRCDocument(current: LyricsDocument, appState: AppState) {
-        guard let axText = MusicAppLyricsProvider.fetchCurrentVisibleLyricsLineText() else {
+    private func calibrateLRCDocument(
+        current: LyricsDocument,
+        visibleLineText: String,
+        appState: AppState
+    ) {
+        let elapsed = appState.effectiveElapsedTime
+        guard let calibrated = Self.calibratedLRCDocument(
+            current: current,
+            visibleLineText: visibleLineText,
+            elapsed: elapsed
+        ) else {
             return
         }
-        let elapsed = appState.playerState.elapsedTime
-        guard elapsed > 0 else { return }
+
+        appState.applyLyricsDocument(calibrated)
+        AppTelemetry.performance.info("LRC calibrated offset=\(calibrated.offsetCorrection) (was \(current.offsetCorrection))")
+    }
+
+    static func calibratedLRCDocument(
+        current: LyricsDocument,
+        visibleLineText axText: String,
+        elapsed: TimeInterval
+    ) -> LyricsDocument? {
+        guard elapsed > 0 else { return nil }
 
         let normalizedAX = Self.normalizeForMatch(axText)
-        guard !normalizedAX.isEmpty else { return }
+        guard !normalizedAX.isEmpty else { return nil }
 
         let candidates = current.lines.compactMap { line -> (LyricLine, TimeInterval)? in
             guard let start = line.startTime else { return nil }
@@ -153,7 +174,7 @@ final class ProviderPipelineController {
         guard let (matched, matchedStart) = candidates.min(by: {
             abs($0.1 - (elapsed + current.offsetCorrection)) < abs($1.1 - (elapsed + current.offsetCorrection))
         }) else {
-            return
+            return nil
         }
 
         let newOffset = matchedStart - elapsed
@@ -161,14 +182,13 @@ final class ProviderPipelineController {
         // where the AX text matched the wrong repeat.
         guard abs(newOffset) <= 10 else {
             AppTelemetry.performance.info("LRC calibration rejected offset=\(newOffset) line=\"\(matched.text, privacy: .public)\"")
-            return
+            return nil
         }
         guard abs(newOffset - current.offsetCorrection) > 0.05 else {
-            return
+            return nil
         }
 
-        appState.applyLyricsDocument(current.withOffsetCorrection(newOffset))
-        AppTelemetry.performance.info("LRC calibrated offset=\(newOffset) (was \(current.offsetCorrection)) line=\"\(matched.text, privacy: .public)\"")
+        return current.withOffsetCorrection(newOffset)
     }
 
     private static func normalizeForMatch(_ value: String) -> String {

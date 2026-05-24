@@ -191,6 +191,16 @@ final class AppState {
         return lyricOffsetSeconds
     }
 
+    /// Effective elapsed time used by lyric sync paths. During live or mock
+    /// preview the playback tick updates this without invalidating broader
+    /// menu state; otherwise the stable player snapshot is authoritative.
+    var effectiveElapsedTime: TimeInterval {
+        if isLiveModeRunning || isMockPreviewRunning {
+            return liveElapsedTime
+        }
+        return playerState.elapsedTime
+    }
+
     /// Where the current effective offset comes from. Used by the menu so
     /// the user knows whether their nudge will affect just this track or
     /// the global default.
@@ -213,7 +223,7 @@ final class AppState {
         let effectiveState = PlayerState(
             playbackStatus: playerState.playbackStatus,
             track: playerState.track,
-            elapsedTime: liveElapsedTime,
+            elapsedTime: effectiveElapsedTime,
             updatedAt: liveElapsedUpdatedAt
         )
         return snapshotBuilder.makeSnapshot(

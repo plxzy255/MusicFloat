@@ -3,6 +3,33 @@ import XCTest
 
 final class OverlaySnapshotBuilderTests: XCTestCase {
     @MainActor
+    func testAppStateEffectiveElapsedUsesLiveClockWhenPlayerSnapshotIsStale() {
+        let defaults = UserDefaults(suiteName: "MusicFloatTests.effectiveElapsed.\(UUID().uuidString)")!
+        let appState = AppState(userDefaults: defaults)
+        var staleState = MockMusicAppBridge.previewState
+        staleState.elapsedTime = 10
+        appState.updatePlayerState(staleState)
+        appState.setMockPreviewRunning(true)
+        appState.updateLiveElapsedTime(42)
+
+        XCTAssertEqual(appState.playerState.elapsedTime, 10)
+        XCTAssertEqual(appState.effectiveElapsedTime, 42)
+    }
+
+    @MainActor
+    func testOverlaySnapshotUsesEffectiveElapsedTime() {
+        let defaults = UserDefaults(suiteName: "MusicFloatTests.overlayEffectiveElapsed.\(UUID().uuidString)")!
+        let appState = AppState(userDefaults: defaults)
+        var staleState = MockMusicAppBridge.previewState
+        staleState.elapsedTime = 10
+        appState.updatePlayerState(staleState)
+        appState.setMockPreviewRunning(true)
+        appState.updateLiveElapsedTime(42)
+
+        XCTAssertEqual(appState.overlaySnapshot.lyricText, "Translation follows, soft and native")
+    }
+
+    @MainActor
     func testReadySnapshotUsesActiveLyricAndTranslation() {
         let snapshot = LyricsOverlaySnapshotBuilder().makeSnapshot(
             contentState: .ready,

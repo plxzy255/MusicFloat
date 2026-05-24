@@ -13,6 +13,9 @@ import OSLog
 enum MusicAppLyricsProvider {
     private(set) static var requiresAccessibilityPermission = false
     private(set) static var shouldRetryVisibleLyrics = false
+    static var hasAccessibilityPermission: Bool {
+        AXIsProcessTrusted()
+    }
     /// On the first successful scrape per app session, dump every AX attribute
     /// on a sample of lyric buttons (and the picked active line) so we can
     /// discover what Music.app actually uses to mark the active line on this

@@ -13,6 +13,8 @@ Lyric resolution runs in this order inside `PublicLyricsProvider.lyrics(for:)`:
 3. **LRCLIB** — timed match if available, with an AX-driven calibration pass that nudges the LRC clock when it drifts. Skipped entirely when the "Allow LRCLIB / Music app UI fallback" toggle is off.
 4. **AX panel scrape** — single-line `.musicAppUI` document. Active-line detection keys off button-frame height (the active line auto-resizes ~1.33× larger), with a viewport filter and geometric centering as tiebreakers.
 
+Missing Accessibility permission no longer blocks non-AX providers: canonical AppleScript lyrics still return immediately, then Apple Music web and LRCLIB are allowed to run before an AX-specific permission message is surfaced.
+
 The live-refresh tick in `ProviderPipelineController` recognizes the source of the current document and will:
 
 - Skip everything for `.appleMusicWeb` timed docs (authoritative, no AX overlay).
@@ -22,7 +24,8 @@ The live-refresh tick in `ProviderPipelineController` recognizes the source of t
 ## What works
 
 - **Catalog songs with a configured `media-user-token`**: the TTML path lights up reliably. Logs show `Lyrics hit appleMusicWeb timed=true lines=N` and the overlay tracks Music's highlight closely on a stable playback.
-- **LRCLIB calibration**: when LRCLIB returns timed lyrics for a different master than the user is playing, the AX-driven calibration nudges the clock back into agreement.
+- **LRCLIB calibration**: when LRCLIB returns timed lyrics for a different master than the user is playing, the AX-driven calibration nudges the clock back into agreement using the overlay's effective live elapsed time rather than the sparse now-playing snapshot.
+- **Mock preview**: architecture defaults stay fully mock; the public Apple provider stack is only selected for live Apple Music mode.
 - **AX active-line detection**: button-height heuristic + viewport filter avoids the prefetch-buttons-far-off-viewport trap and the wrapped-2-line-inactive-lyric trap. Works without Music exposing any state attribute (the AX dump confirmed only the standard skeleton is published).
 
 ## Known issues
