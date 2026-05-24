@@ -62,6 +62,22 @@ final class AppleMusicWebLyricsProviderTests: XCTestCase {
         XCTAssertEqual(broadQuery["include[songs]"], "albums,lyrics,syllable-lyrics")
     }
 
+    func testBroadSongsEndpoint404ReturnsNilAfterDedicatedEndpointMiss() async throws {
+        let stub = AppleMusicHTTPStub(responses: [
+            .storefront(language: "en-US"),
+            .dedicated(status: 200, ttml: nil, localizations: [:]),
+            .empty(status: 404)
+        ])
+        let provider = provider(stub: stub)
+
+        let document = try await provider.lyrics(for: track())
+
+        XCTAssertNil(document)
+        let paths = await stub.requestPaths()
+        XCTAssertEqual(paths[1], "/v1/catalog/us/songs/song-id/syllable-lyrics")
+        XCTAssertEqual(paths[2], "/v1/catalog/us/songs/song-id")
+    }
+
     private func provider(
         stub: AppleMusicHTTPStub,
         preferredLyricLanguage: String? = nil
@@ -185,6 +201,10 @@ private actor AppleMusicHTTPStub {
                     ]
                 ]]
             ])
+        }
+
+        static func empty(status: Int) -> Response {
+            Response(status: status, payload: [:])
         }
     }
 }

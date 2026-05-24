@@ -323,8 +323,7 @@ final class AppleMusicWebLyricsProvider {
 
         let decoded = try await fetchDecoded(SyllableLyricsResponse.self, url: url, developerToken: developerToken, mediaUserToken: mediaUserToken)
         let variants = variants(from: decoded.data.first?.attributes)
-        let localizationCount = variants.filter { $0.source == .localization }.count
-        AppTelemetry.performance.info("AM web: endpoint=syllable-lyrics localization_count=\(localizationCount)")
+        AppTelemetry.performance.info("AM web: endpoint=syllable-lyrics localization_count=\(Self.localizationCount(in: variants))")
         return selectAndParse(variants: variants, storefrontLanguage: language, endpoint: "syllable-lyrics")
     }
 
@@ -341,7 +340,13 @@ final class AppleMusicWebLyricsProvider {
         ]
         guard let url = components.url else { return nil }
 
-        let decoded = try await fetchDecoded(SongResponse.self, url: url, developerToken: developerToken, mediaUserToken: mediaUserToken)
+        let decoded: SongResponse
+        do {
+            decoded = try await fetchDecoded(SongResponse.self, url: url, developerToken: developerToken, mediaUserToken: mediaUserToken)
+        } catch let error as APIError where error == .notFound {
+            AppTelemetry.performance.info("AM web: songs-include fallback endpoint returned 404")
+            return nil
+        }
         // Prefer syllable lyrics — they're a superset of plain timed lyrics
         // and carry the word-level timing for future per-syllable rendering.
         var lyricVariants = variants(from: decoded.data.first?.relationships?.syllableLyrics?.data.first?.attributes)
@@ -349,7 +354,7 @@ final class AppleMusicWebLyricsProvider {
            let attrs = decoded.data.first?.relationships?.lyrics?.data.first?.attributes {
             lyricVariants = variants(from: attrs, primarySource: TTMLVariant.Source.fallbackLyrics)
         }
-        AppTelemetry.performance.info("AM web: endpoint=songs-include localization_count=\(max(lyricVariants.count - 1, 0))")
+        AppTelemetry.performance.info("AM web: endpoint=songs-include localization_count=\(Self.localizationCount(in: lyricVariants))")
         guard let document = selectAndParse(variants: lyricVariants, storefrontLanguage: language, endpoint: "songs-include") else {
             AppTelemetry.performance.info("AM web: catalog row has no lyrics ttml")
             return nil
@@ -439,6 +444,10 @@ final class AppleMusicWebLyricsProvider {
             guard let candidate = normalizedLanguage($0.language) else { return false }
             return candidate == language || candidate.split(separator: "-").first == language.split(separator: "-").first
         }
+    }
+
+    private static func localizationCount(in variants: [TTMLVariant]) -> Int {
+        variants.filter { $0.source == .localization }.count
     }
 
     private static func normalizedLanguage(_ language: String?) -> String? {
