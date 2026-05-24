@@ -72,6 +72,7 @@ enum TTMLParser {
         private var spanText: String = ""
         private var inSpan = false
         private var nextID = 0
+        private var timingMode: String?
 
         func parser(
             _ parser: XMLParser,
@@ -82,6 +83,8 @@ enum TTMLParser {
         ) {
             let name = localName(elementName)
             switch name {
+            case "tt":
+                timingMode = attributeDict["itunes:timing"] ?? attributeDict["timing"]
             case "p":
                 inP = true
                 pBegin = TTMLParser.parseTimecode(attributeDict["begin"])
@@ -121,19 +124,7 @@ enum TTMLParser {
             switch name {
             case "span":
                 guard inSpan else { return }
-                let text = spanText.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !text.isEmpty, let begin = spanBegin, let end = spanEnd {
-                    pSpans.append(LyricSyllable(text: spanText, startTime: begin, endTime: end))
-                }
-                // Spans inside <p> together form the line text. Keep a
-                // raw reconstruction so syllable fragments can join without
-                // invented spaces while source-provided spacing is preserved.
-                if !pSpans.isEmpty || pText.isEmpty {
-                    if pText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        pText = ""
-                    }
-                    pText += spanText
-                }
+                appendSpanText()
                 inSpan = false
                 spanBegin = nil
                 spanEnd = nil
@@ -160,6 +151,70 @@ enum TTMLParser {
             default:
                 break
             }
+        }
+
+        private func appendSpanText() {
+            let normalizedText = normalizeInlineWhitespace(spanText)
+            let trimmedText = normalizedText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedText.isEmpty else {
+                if spanText.contains(where: \.isWhitespace) {
+                    appendSpaceToPreviousSyllable()
+                    pText = appendSpaceIfNeeded(to: pText)
+                }
+                return
+            }
+
+            let startsWithSpace = normalizedText.first?.isWhitespace == true
+            let endsWithSpace = normalizedText.last?.isWhitespace == true
+
+            if startsWithSpace || shouldInferSpace(before: trimmedText) {
+                appendSpaceToPreviousSyllable()
+                pText = appendSpaceIfNeeded(to: pText)
+            }
+
+            let visibleText = endsWithSpace ? "\(trimmedText) " : trimmedText
+            if let begin = spanBegin, let end = spanEnd {
+                pSpans.append(LyricSyllable(text: visibleText, startTime: begin, endTime: end))
+            }
+            pText += visibleText
+        }
+
+        private func shouldInferSpace(before text: String) -> Bool {
+            guard timingMode?.localizedCaseInsensitiveCompare("Word") == .orderedSame,
+                  let previousText = pSpans.last?.text,
+                  previousText.last?.isWhitespace != true,
+                  let previous = previousText.last,
+                  let current = text.first else {
+                return false
+            }
+
+            return previous.isWordJoinCandidate && current.isWordJoinCandidate
+        }
+
+        private func appendSpaceToPreviousSyllable() {
+            guard let last = pSpans.last, last.text.last?.isWhitespace != true else {
+                return
+            }
+
+            pSpans[pSpans.count - 1] = LyricSyllable(
+                text: "\(last.text) ",
+                startTime: last.startTime,
+                endTime: last.endTime
+            )
+        }
+
+        private func appendSpaceIfNeeded(to text: String) -> String {
+            guard !text.isEmpty, text.last?.isWhitespace != true else {
+                return text
+            }
+            return "\(text) "
+        }
+
+        private func normalizeInlineWhitespace(_ text: String) -> String {
+            text.components(separatedBy: .whitespacesAndNewlines)
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+                .withPreservedEdgeWhitespace(from: text)
         }
 
         private func localName(_ qualified: String) -> String {
@@ -191,5 +246,26 @@ enum TTMLParser {
             }
             return qualified
         }
+    }
+}
+
+private extension Character {
+    var isWordJoinCandidate: Bool {
+        guard unicodeScalars.allSatisfy(\.isASCII) else { return false }
+        return isLetter || isNumber || self == "," || self == "." || self == "!" || self == "?" || self == "'" || self == "’"
+    }
+}
+
+private extension String {
+    func withPreservedEdgeWhitespace(from source: String) -> String {
+        guard !isEmpty else { return self }
+        var result = self
+        if source.first?.isWhitespace == true {
+            result = " \(result)"
+        }
+        if source.last?.isWhitespace == true {
+            result += " "
+        }
+        return result
     }
 }
