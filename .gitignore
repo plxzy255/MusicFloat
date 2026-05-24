@@ -1,0 +1,6 @@
+.DS_Store
+**/.DS_Store
+.codex/DerivedData/
+.codex/traces/
+.agents/traces/
+dist/
