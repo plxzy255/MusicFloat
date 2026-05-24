@@ -70,13 +70,17 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
 
     func events() -> AsyncStream<PlayerState> {
         AsyncStream(bufferingPolicy: .bufferingNewest(8)) { continuation in
-            let stream = AppleMusicEventListener.makeStream()
+            let stream = AppleMusicEventListener.makePlayerInfoStream()
             let task = Task { @MainActor in
                 var lastEmittedTrackID: String?
                 var lastEmittedElapsed: TimeInterval = 0
                 var lastEmittedAt = Date()
 
-                for await event in stream {
+                for await playerInfoEvent in stream {
+                    let event = playerInfoEvent.state
+                    AppTelemetry.performance.info(
+                        "playerInfo raw=\(playerInfoEvent.rawSummary, privacy: .public) parsedTrackID=\(event.track?.id ?? "nil", privacy: .public) parsedElapsed=\(event.elapsedTime)"
+                    )
                     // Notifications do not carry `player position`. Refine with
                     // AppleScript only when the snapshot agrees with the event
                     // track; during skips Music.app can briefly report the old
@@ -98,7 +102,9 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
                             if let eventTrack = event.track,
                                let snapshotTrack = snapshot.track,
                                eventTrack.id != snapshotTrack.id {
-                                AppTelemetry.performance.info("Music snapshot lagged new-track event; starting lyrics fetch without stale elapsed")
+                                AppTelemetry.performance.info(
+                                    "Music snapshot lagged new-track event; eventTrackID=\(eventTrack.id, privacy: .public) snapshotTrackID=\(snapshotTrack.id, privacy: .public) starting lyrics fetch without stale elapsed"
+                                )
                                 continue
                             }
                             refined = PlayerState(
@@ -128,6 +134,9 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
                         )
                     }
 
+                    AppTelemetry.performance.info(
+                        "playerInfo refined trackID=\(refined.track?.id ?? "nil", privacy: .public) elapsed=\(refined.elapsedTime) refineOK=\(refineOK)"
+                    )
                     continuation.yield(refined)
                     lastEmittedTrackID = refined.track?.id
                     lastEmittedElapsed = refined.elapsedTime
