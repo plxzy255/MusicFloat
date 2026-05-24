@@ -235,7 +235,15 @@ final class AppleMusicWebLyricsProvider {
                 return
             }
             if let keyed = try? container.decode([String: String].self) {
-                self = .values(keyed.map { LocalizedTTML(language: $0.key, ttml: $0.value) })
+                let sortedKeyed = keyed.sorted { lhs, rhs in
+                    let lhsLanguage = normalizedLanguage(lhs.key) ?? lhs.key
+                    let rhsLanguage = normalizedLanguage(rhs.key) ?? rhs.key
+                    if lhsLanguage != rhsLanguage {
+                        return lhsLanguage < rhsLanguage
+                    }
+                    return lhs.key < rhs.key
+                }
+                self = .values(sortedKeyed.map { LocalizedTTML(language: $0.key, ttml: $0.value) })
                 return
             }
             self = .values([])
