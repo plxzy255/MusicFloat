@@ -38,6 +38,101 @@ final class TTMLParserTests: XCTestCase {
     }
 
     @MainActor
+    func testWordTimedSpansInferReadableSpaces() {
+        let ttml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <tt xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Word">
+          <body>
+            <div>
+              <p begin="00:01.000" end="00:05.000">
+                <span begin="00:01.000" end="00:01.300">Yeah,</span><span begin="00:01.300" end="00:01.600">yeah,</span><span begin="00:01.600" end="00:02.000">I'm</span><span begin="00:02.000" end="00:02.300">out</span><span begin="00:02.300" end="00:02.700">that</span><span begin="00:02.700" end="00:03.200">Brooklyn</span>
+              </p>
+            </div>
+          </body>
+        </tt>
+        """
+
+        let document = TTMLParser.parse(ttml: ttml)
+
+        XCTAssertEqual(document?.lines.first?.text, "Yeah, yeah, I'm out that Brooklyn")
+        XCTAssertEqual(document?.lines.first?.syllables.map(\.text), [
+            "Yeah, ",
+            "yeah, ",
+            "I'm ",
+            "out ",
+            "that ",
+            "Brooklyn"
+        ])
+    }
+
+    @MainActor
+    func testNonWordTimedSpansDoNotInventSpacesBetweenSyllableFragments() {
+        let ttml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <tt xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Syllable">
+          <body>
+            <div>
+              <p begin="00:01.000" end="00:03.000">
+                <span begin="00:01.000" end="00:01.500">Hel</span><span begin="00:01.500" end="00:02.000">lo</span>
+              </p>
+            </div>
+          </body>
+        </tt>
+        """
+
+        let document = TTMLParser.parse(ttml: ttml)
+
+        XCTAssertEqual(document?.lines.first?.text, "Hello")
+        XCTAssertEqual(document?.lines.first?.syllables.map(\.text), ["Hel", "lo"])
+    }
+
+    @MainActor
+    func testWordTimedCJKSpansDoNotInferLatinSpaces() {
+        let ttml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <tt xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Word">
+          <body>
+            <div>
+              <p begin="00:01.000" end="00:03.000">
+                <span begin="00:01.000" end="00:01.500">東京</span><span begin="00:01.500" end="00:02.000">へ</span>
+              </p>
+            </div>
+          </body>
+        </tt>
+        """
+
+        let document = TTMLParser.parse(ttml: ttml)
+
+        XCTAssertEqual(document?.lines.first?.text, "東京へ")
+        XCTAssertEqual(document?.lines.first?.syllables.map(\.text), ["東京", "へ"])
+    }
+
+    @MainActor
+    func testWordTimedParentheticalAdlibSeparatesFromPreviousWord() {
+        let ttml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <tt xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Word">
+          <body>
+            <div>
+              <p begin="00:01.000" end="00:04.000">
+                <span begin="00:01.000" end="00:01.400">out</span><span begin="00:01.400" end="00:01.800">(Yeah)</span><span begin="00:01.800" end="00:02.400">Brooklyn</span>
+              </p>
+            </div>
+          </body>
+        </tt>
+        """
+
+        let document = TTMLParser.parse(ttml: ttml)
+
+        XCTAssertEqual(document?.lines.first?.text, "out (Yeah) Brooklyn")
+        XCTAssertEqual(document?.lines.first?.syllables.map(\.text), [
+            "out ",
+            "(Yeah) ",
+            "Brooklyn"
+        ])
+    }
+
+    @MainActor
     func testParsesHourMinuteSecondAndSecondsTimecodes() {
         XCTAssertEqual(TTMLParser.parseTimecode("01:02:03.456"), 3723.456)
         XCTAssertEqual(TTMLParser.parseTimecode("02:03.250"), 123.25)

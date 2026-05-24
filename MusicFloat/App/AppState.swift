@@ -57,6 +57,8 @@ struct LyricsOverlaySnapshot: Equatable, Sendable {
     let statusText: String
     let trackText: String
     let lyricText: String
+    let activeLine: LyricLine?
+    let effectiveLyricTime: TimeInterval
     let translationText: String?
     let attributionText: String
     let widthPreset: OverlayWidthPreset
@@ -64,6 +66,22 @@ struct LyricsOverlaySnapshot: Equatable, Sendable {
 
 struct LyricsOverlaySnapshotBuilder: Sendable {
     private let syncEngine = LyricsSyncEngine()
+
+    static func activeSyllableIndex(in line: LyricLine, at effectiveLyricTime: TimeInterval) -> Int? {
+        guard !line.syllables.isEmpty else {
+            return nil
+        }
+
+        if let activeIndex = line.syllables.firstIndex(where: { syllable in
+            syllable.startTime <= effectiveLyricTime && effectiveLyricTime < syllable.endTime
+        }) {
+            return activeIndex
+        }
+
+        return line.syllables.lastIndex { syllable in
+            syllable.startTime <= effectiveLyricTime
+        }
+    }
 
     func makeSnapshot(
         contentState: OverlayContentState,
@@ -83,6 +101,8 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
                 statusText: "Preparing lyrics",
                 trackText: trackText,
                 lyricText: "Listening for a mock playback snapshot...",
+                activeLine: nil,
+                effectiveLyricTime: playerState.elapsedTime + lyricOffsetSeconds + lyricsDocument.offsetCorrection,
                 translationText: nil,
                 attributionText: "Mock pipeline",
                 widthPreset: widthPreset
@@ -93,6 +113,8 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
                 statusText: playerState.statusLine,
                 trackText: trackText,
                 lyricText: "Lyrics unavailable for this track",
+                activeLine: nil,
+                effectiveLyricTime: playerState.elapsedTime + lyricOffsetSeconds + lyricsDocument.offsetCorrection,
                 translationText: showsTranslation ? "Translation will wait for lyrics" : nil,
                 attributionText: "No provider result",
                 widthPreset: widthPreset
@@ -103,11 +125,14 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
                 statusText: "Provider error",
                 trackText: trackText,
                 lyricText: message,
+                activeLine: nil,
+                effectiveLyricTime: playerState.elapsedTime + lyricOffsetSeconds + lyricsDocument.offsetCorrection,
                 translationText: nil,
                 attributionText: "Mock failure state",
                 widthPreset: widthPreset
             )
         case .ready:
+            let effectiveLyricTime = playerState.elapsedTime + lyricOffsetSeconds + lyricsDocument.offsetCorrection
             let activeLine = syncEngine.activeLine(
                 in: lyricsDocument,
                 at: playerState.elapsedTime + lyricOffsetSeconds
@@ -122,6 +147,8 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
                 statusText: playerState.statusLine,
                 trackText: trackText,
                 lyricText: lyricText,
+                activeLine: activeLine,
+                effectiveLyricTime: effectiveLyricTime,
                 translationText: translationText,
                 attributionText: "\(lyricsDocument.attribution) - \(translation.targetLanguage)",
                 widthPreset: widthPreset

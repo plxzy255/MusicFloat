@@ -32,4 +32,20 @@ struct LyricsSyncEngine: Sendable {
             .min()
             .map { $0 - document.offsetCorrection }
     }
+
+    func nextSyllableBoundary(in document: LyricsDocument, after elapsedTime: TimeInterval) -> TimeInterval? {
+        guard document.isTimed else {
+            return nil
+        }
+
+        let effective = elapsedTime + document.offsetCorrection
+        return document.lines
+            .flatMap(\.syllables)
+            .flatMap { syllable in
+                [syllable.startTime, syllable.endTime]
+            }
+            .filter { $0 > effective }
+            .min()
+            .map { $0 - document.offsetCorrection }
+    }
 }

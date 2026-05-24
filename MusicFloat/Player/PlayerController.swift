@@ -15,6 +15,9 @@ final class PlayerController {
     /// Threshold for treating an elapsed-time jump as a user seek/scrub rather
     /// than normal clock drift.
     private static let seekDetectionThreshold: TimeInterval = 2.0
+    private static let liveLineTickCap: TimeInterval = 1.0
+    private static let liveSyllableTickCap: TimeInterval = 0.12
+    private static let liveTickMinimum: TimeInterval = 0.03
 
     private let bridge: any MusicAppBridge
     private var refreshTask: Task<Void, Never>?
@@ -150,15 +153,25 @@ final class PlayerController {
             var consecutiveResyncFailures = 0
 
             while !Task.isCancelled {
-                // Sleep until the next lyric line boundary, capped to 1s so
-                // a freshly-loaded lyrics doc is picked up promptly.
+                // Sleep until the next lyric boundary. Syllable-timed Apple
+                // lyrics need a tighter cap than line-synced documents so the
+                // active word does not jump over short spans.
                 let document = appState.lyricsDocument
-                let nextStart = self.syncEngine.nextLineStart(
+                let nextSyllable = self.syncEngine.nextSyllableBoundary(
                     in: document,
                     after: elapsed + appState.effectiveLyricOffsetSeconds
                 )
-                let targetElapsed = (nextStart.map { $0 - appState.effectiveLyricOffsetSeconds }) ?? (elapsed + 1.0)
-                let sleep = max(0.1, min(1.0, targetElapsed - elapsed))
+                let nextLine = self.syncEngine.nextLineStart(
+                    in: document,
+                    after: elapsed + appState.effectiveLyricOffsetSeconds
+                )
+                let nextBoundary = [nextSyllable, nextLine].compactMap { $0 }.min()
+                let targetElapsed = (nextBoundary.map { $0 - appState.effectiveLyricOffsetSeconds }) ?? (elapsed + Self.liveLineTickCap)
+                let targetDelta = targetElapsed - elapsed
+                let tickCap = nextSyllable != nil && targetDelta <= Self.liveLineTickCap
+                    ? Self.liveSyllableTickCap
+                    : Self.liveLineTickCap
+                let sleep = max(Self.liveTickMinimum, min(tickCap, targetDelta))
                 try? await Task.sleep(nanoseconds: UInt64(sleep * 1_000_000_000))
                 if Task.isCancelled { return }
 
