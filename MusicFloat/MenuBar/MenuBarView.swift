@@ -57,10 +57,8 @@ struct MenuBarView: View {
         Text("Providers: \(appState.providerRuntimeState.displayName)")
             .foregroundStyle(.secondary)
 
-        if let track = appState.playerState.track {
-            Text(track.displayTitle)
-                .foregroundStyle(.secondary)
-        }
+        Text(appState.playerState.track?.displayTitle ?? "No current track")
+            .foregroundStyle(.secondary)
 
         Divider()
 

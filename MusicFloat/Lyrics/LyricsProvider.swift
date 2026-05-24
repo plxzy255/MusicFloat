@@ -115,6 +115,12 @@ final class PublicLyricsProvider: LyricsProvider {
     }
 
     func lyrics(for track: NowPlayingTrack) async -> LyricsProviderResult {
+        await AppTelemetry.measure("PublicLyricsProvider.lyrics") {
+            await lyricsImpl(for: track)
+        }
+    }
+
+    private func lyricsImpl(for track: NowPlayingTrack) async -> LyricsProviderResult {
         if track.providerName.lowercased().contains("mock") {
             return .unavailable
         }

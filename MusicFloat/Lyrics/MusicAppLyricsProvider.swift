@@ -81,6 +81,12 @@ enum MusicAppLyricsProvider {
     /// lyrics panel is visible, read the current top lyric line from Music's
     /// accessibility tree as an integrated source before falling back to LRCLIB.
     static func fetchCurrentVisibleLyricsLineDocument(promptForAccessibility: Bool = false) -> LyricsDocument? {
+        AppTelemetry.measure("MusicAppLyricsProvider.fetchCurrentVisibleLyricsLineDocument") {
+            fetchCurrentVisibleLyricsLineDocumentImpl(promptForAccessibility: promptForAccessibility)
+        }
+    }
+
+    private static func fetchCurrentVisibleLyricsLineDocumentImpl(promptForAccessibility: Bool = false) -> LyricsDocument? {
         guard hasAccessibilityTrust(prompt: promptForAccessibility) else {
             requiresAccessibilityPermission = true
             shouldRetryVisibleLyrics = false

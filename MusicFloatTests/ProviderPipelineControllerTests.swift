@@ -3,6 +3,38 @@ import XCTest
 
 @MainActor
 final class ProviderPipelineControllerTests: XCTestCase {
+    func testHiddenLiveOverlayDoesNotTriggerProviderRefresh() {
+        let defaults = UserDefaults(suiteName: "MusicFloatTests.hiddenLiveRefresh.\(UUID().uuidString)")!
+        let appState = AppState(userDefaults: defaults)
+        appState.runtimeFeatureFlags = .liveAppleMusic
+        appState.isOverlayVisible = false
+        appState.setLiveModeRunning(true)
+        appState.updatePlayerState(PlayerState(
+            playbackStatus: .playing,
+            track: NowPlayingTrack(
+                id: "track:1",
+                title: "Quiet",
+                artist: "MusicFloat",
+                album: "Idle",
+                duration: 180,
+                providerName: "Apple Music"
+            ),
+            elapsedTime: 12,
+            updatedAt: Date()
+        ))
+
+        let lyricsProvider = RecordingLyricsProvider()
+        let controller = ProviderPipelineController(
+            lyricsProvider: lyricsProvider,
+            translationProvider: RecordingTranslationProvider()
+        )
+
+        controller.refreshOverlayContentForLiveTrack(appState: appState)
+
+        XCTAssertEqual(lyricsProvider.requestedTrackIDs, [])
+        XCTAssertEqual(appState.providerRuntimeState, .idle)
+    }
+
     func testLiveTransientNilTrackPreservesReadyLyricsState() {
         let defaults = UserDefaults(suiteName: "MusicFloatTests.liveTransientNilTrack.\(UUID().uuidString)")!
         let appState = AppState(userDefaults: defaults)
@@ -32,6 +64,16 @@ final class ProviderPipelineControllerTests: XCTestCase {
         XCTAssertEqual(appState.providerRuntimeState, .ready)
         XCTAssertEqual(appState.lyricsDocument, document)
         XCTAssertEqual(lyricsProvider.requestedTrackIDs, [])
+    }
+
+    func testAppleMusicWebTimedDocumentSkipsAXRefreshAndCalibration() {
+        let document = LyricsDocument(
+            source: .appleMusicWeb,
+            lines: [LyricLine(id: 0, text: "Ground truth", startTime: 10)],
+            isTimed: true
+        )
+
+        XCTAssertTrue(ProviderPipelineController.skipsIntegratedVisibleLyricsRefresh(for: document))
     }
 
     private final class RecordingLyricsProvider: LyricsProvider {

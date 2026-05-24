@@ -27,6 +27,12 @@ final class AppleMusicWebLyricsProvider {
     /// this track on this account, or throws on network / auth failures so
     /// the caller can decide whether to fall back.
     func lyrics(for track: NowPlayingTrack) async throws -> LyricsDocument? {
+        try await AppTelemetry.measure("AppleMusicWebLyricsProvider.lyrics") {
+            try await lyricsImpl(for: track)
+        }
+    }
+
+    private func lyricsImpl(for track: NowPlayingTrack) async throws -> LyricsDocument? {
         guard let mediaUserToken = MediaUserTokenStore.read(),
               !mediaUserToken.isEmpty else {
             return nil
@@ -140,6 +146,22 @@ final class AppleMusicWebLyricsProvider {
     }
 
     private func fetchLyrics(
+        identity: AppleMusicCatalogResolver.Identity,
+        language: String,
+        developerToken: String,
+        mediaUserToken: String
+    ) async throws -> LyricsDocument? {
+        try await AppTelemetry.measure("AppleMusicWebLyricsProvider.fetchLyrics") {
+            try await fetchLyricsImpl(
+                identity: identity,
+                language: language,
+                developerToken: developerToken,
+                mediaUserToken: mediaUserToken
+            )
+        }
+    }
+
+    private func fetchLyricsImpl(
         identity: AppleMusicCatalogResolver.Identity,
         language: String,
         developerToken: String,

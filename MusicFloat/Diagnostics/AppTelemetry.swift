@@ -11,6 +11,10 @@ enum AppTelemetry {
     static let settings = Logger(subsystem: subsystem, category: "Settings")
     static let performance = Logger(subsystem: subsystem, category: "Performance")
 
+    static var isVerbosePlaybackTelemetryEnabled: Bool {
+        CommandLine.arguments.contains("--debug-playback-telemetry")
+    }
+
     static func measure<T>(_ name: StaticString, _ work: () throws -> T) rethrows -> T {
         let signpostID = signposter.makeSignpostID()
         let state = signposter.beginInterval(name, id: signpostID)
@@ -18,5 +22,14 @@ enum AppTelemetry {
             signposter.endInterval(name, state)
         }
         return try work()
+    }
+
+    static func measure<T>(_ name: StaticString, _ work: () async throws -> T) async rethrows -> T {
+        let signpostID = signposter.makeSignpostID()
+        let state = signposter.beginInterval(name, id: signpostID)
+        defer {
+            signposter.endInterval(name, state)
+        }
+        return try await work()
     }
 }
