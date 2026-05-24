@@ -128,13 +128,10 @@ final class PublicLyricsProvider: LyricsProvider {
             return .available(cached)
         }
 
-        // 1) AppleScript library lyrics. These are canonical for local/
-        // library tracks and always plain text. `fetchCurrentTrackLyrics`
-        // will also fall back to an AX panel scrape internally when
-        // AppleScript has nothing — for catalog tracks that's _always_ the
-        // case, so we'd short-circuit every catalog-track lookup before the
-        // web API ever runs. Filter strictly to canonical `.musicApp`
-        // results; AX is reconsidered at the end of the pipeline.
+        // 1) AppleScript library lyrics. These are canonical for local/library
+        // tracks and always plain text. Keep this lookup library-only; the AX
+        // panel scrape is intentionally the final fallback because traversing
+        // Music.app's accessibility tree can briefly stall the UI.
         let appleScriptDoc = dependencies.fetchAppleScriptLyrics()
         if let doc = appleScriptDoc, doc.source == .musicApp {
             if shouldCache(document: doc) {
