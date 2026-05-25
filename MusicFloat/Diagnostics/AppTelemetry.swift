@@ -1,7 +1,7 @@
 import Foundation
 import OSLog
 
-enum AppTelemetry {
+nonisolated enum AppTelemetry {
     private static let subsystem = Bundle.main.bundleIdentifier ?? "cv.MusicFloat"
     private static let signposter = OSSignposter(subsystem: subsystem, category: "Performance")
 

@@ -9,12 +9,20 @@ final class SettingsWindowController {
     func show(
         appState: AppState,
         onTranslationPreferencesChanged: @escaping () -> Void,
-        onTranslationPreparationCompleted: @escaping () -> Void
+        onOverlayLayoutPreferencesChanged: @escaping () -> Void,
+        onTranslationPreparationCompleted: @escaping () -> Void,
+        onDiskMediaCachePreferenceChanged: @escaping (Bool) async -> Void,
+        mediaCacheUsageText: @escaping () async -> String,
+        clearMediaCache: @escaping () async -> Void
     ) {
         let settingsView = SettingsView(
             appState: appState,
             onTranslationPreferencesChanged: onTranslationPreferencesChanged,
-            onTranslationPreparationCompleted: onTranslationPreparationCompleted
+            onOverlayLayoutPreferencesChanged: onOverlayLayoutPreferencesChanged,
+            onTranslationPreparationCompleted: onTranslationPreparationCompleted,
+            onDiskMediaCachePreferenceChanged: onDiskMediaCachePreferenceChanged,
+            mediaCacheUsageText: mediaCacheUsageText,
+            clearMediaCache: clearMediaCache
         )
 
         if let window {
@@ -32,7 +40,7 @@ final class SettingsWindowController {
         window.title = "MusicFloat Settings"
         window.styleMask = [.titled, .closable, .miniaturizable]
         window.isReleasedWhenClosed = false
-        window.setContentSize(NSSize(width: 420, height: 520))
+        window.setContentSize(NSSize(width: 420, height: 600))
         window.center()
         self.window = window
         show(window)

@@ -7,15 +7,22 @@ import SwiftUI
 struct SettingsView: View {
     @Bindable var appState: AppState
     var onTranslationPreferencesChanged: () -> Void = {}
+    var onOverlayLayoutPreferencesChanged: () -> Void = {}
     var onTranslationPreparationCompleted: () -> Void = {}
+    var onDiskMediaCachePreferenceChanged: (Bool) async -> Void = { _ in }
+    var mediaCacheUsageText: () async -> String = { "Memory 0 KB - Disk Off" }
+    var clearMediaCache: () async -> Void = {}
 
     @AppStorage("showTranslation") private var showsTranslation = true
     @AppStorage("preferredTranslationLanguageIdentifier") private var preferredTranslationLanguageIdentifier = AppState.systemLanguageIdentifier
     @AppStorage("overlayWidthPreset") private var overlayWidthPresetRaw = OverlayWidthPreset.medium.rawValue
     @AppStorage("reduceHiddenMemoryUsage") private var reduceHiddenMemoryUsage = true
     @AppStorage("lrclibFallbackEnabled") private var lrclibFallbackEnabled = true
+    @AppStorage("diskMediaCacheEnabled") private var diskMediaCacheEnabled = false
     @State private var mediaUserTokenInput: String = ""
     @State private var mediaUserTokenSavedHint: String = ""
+    @State private var mediaCacheStatusText: String = "Checking..."
+    @State private var isClearingMediaCache = false
     @State private var supportedTranslationLanguages: [Locale.Language] = []
     #if ENABLE_APPLE_TRANSLATION
     @State private var preparationConfiguration: TranslationSession.Configuration?
@@ -162,7 +169,27 @@ struct SettingsView: View {
                 LabeledContent("Hidden refresh", value: appState.runtimeFeatureFlags.allowsHiddenProviderRefresh ? "Enabled" : "Disabled")
                 LabeledContent("Provider state", value: appState.providerRuntimeState.displayName)
                 LabeledContent("Translation state", value: appState.translationRuntimeState.displayName)
-                LabeledContent("Cache", value: "Ephemeral placeholder")
+            }
+
+            Section("Cache") {
+                Toggle("Disk cache", isOn: $diskMediaCacheEnabled)
+                LabeledContent("Usage", value: mediaCacheStatusText)
+                HStack {
+                    Button("Clear Cache") {
+                        Task { @MainActor in
+                            isClearingMediaCache = true
+                            await clearMediaCache()
+                            await refreshMediaCacheUsage()
+                            isClearingMediaCache = false
+                        }
+                    }
+                    .disabled(isClearingMediaCache)
+
+                    if isClearingMediaCache {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
             }
         }
         .formStyle(.grouped)
@@ -171,9 +198,10 @@ struct SettingsView: View {
         .onAppear {
             AppTelemetry.settings.info("Settings view appeared")
             syncPreferencesToAppState()
-            Task {
-                await loadTranslationLanguageOptions()
-            }
+        }
+        .task {
+            await loadTranslationLanguageOptions()
+            await refreshMediaCacheUsage()
         }
         .onChange(of: showsTranslation) {
             syncPreferencesToAppState()
@@ -183,9 +211,16 @@ struct SettingsView: View {
         }
         .onChange(of: overlayWidthPresetRaw) {
             syncPreferencesToAppState()
+            onOverlayLayoutPreferencesChanged()
         }
         .onChange(of: reduceHiddenMemoryUsage) {
             syncPreferencesToAppState()
+        }
+        .onChange(of: diskMediaCacheEnabled) {
+            Task { @MainActor in
+                await onDiskMediaCachePreferenceChanged(diskMediaCacheEnabled)
+                await refreshMediaCacheUsage()
+            }
         }
     }
 
@@ -227,6 +262,10 @@ struct SettingsView: View {
             )
             syncPreferencesToAppState()
         }
+    }
+
+    private func refreshMediaCacheUsage() async {
+        mediaCacheStatusText = await mediaCacheUsageText()
     }
 
     private static func localizedLanguageName(for identifier: String) -> String {

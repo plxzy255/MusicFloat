@@ -6,6 +6,20 @@ This is a planning note only. It should guide later implementation, not enable r
 
 Deployment target: **macOS 26.5**. All Translation APIs discussed here are unconditionally available at this target. The plan documents version boundaries for reference but implementation does not need availability guards.
 
+2026-05-25 follow-up: the Apple Translation implementation remains build-gated.
+Debug can compile it through `ENABLE_APPLE_TRANSLATION`; default Release no
+longer defines that flag, and fresh `otool -L` verification showed no
+Translation/NaturalLanguage linkage in the default Release binary. Use
+`script/profile.sh --apple-translation`, or `ENABLE_APPLE_TRANSLATION_BUILD=1`,
+for explicit Translation/NaturalLanguage profiling. Keep future
+memory/performance claims split between default Release and that
+translation-enabled lane.
+
+Clean snapshot startup/demo pair `20260525-082557Z-demo-Direct-Sample-8af2ba8`
+vs `20260525-082703Z-demo-Direct-Sample-8af2ba8` did not reproduce a startup
+RSS jump from merely linking Translation/NaturalLanguage. This does not measure
+an active `TranslationSession`; repeat once real translation requests are wired.
+
 ## Goal
 
 Build translation as a native, privacy-first provider pipeline for floating lyrics. The app should eventually translate lyrics quickly enough for an overlay, but the architecture should stay small, cancellable, measurable, and easy to route away from any provider that proves too heavy or unreliable.
@@ -136,11 +150,35 @@ Cache key should include:
 
 Do not log or store more than the overlay needs. Avoid raw provider payload archives. Add invalidation when lyrics source, target language, provider, or strategy changes.
 
+Current implementation status: successful `LyricTranslation` values are
+`Codable` and cached in the shared media cache as JSON data. Runtime cache keys
+include provider identifier, normalized target language, lyrics source, timing
+shape, source language, line IDs, line text, and syllable timing, then collapse
+that material into a bounded SHA-256 redacted key string. The cache key does not
+grow with song length and does not expose raw lyrics.
+The app now uses `DiskBackedMediaCache` so translation payloads can persist only
+when the user enables the Disk cache setting. Memory entries are bounded by the
+shared LRU/TTL `MediaCachePolicy` (`maxEntries`, `maxTotalCost`, and
+translation TTL), while disk entries are additionally bounded by entry count,
+total cost, object cost, TTL, and opt-in persisted namespaces. Disk filenames
+and the index use hashed lookup keys, and Settings exposes usage plus Clear
+Cache. Raw lyrics remain excluded from disk persistence until that policy is
+separately approved.
+
 ## Privacy And Entitlements
 
 Apple on-device translation does not require a network entitlement from MusicFloat.
 
-The `com.apple.security.network.client` entitlement is already present (needed by LRCLIB for lyric fetching). This is fine — Apple on-device Translation does not use it. When a cloud translation provider is later added, the existing entitlement covers it, but settings and documentation must then explain to the user that lyrics may leave the device.
+Current entitlement state: `MusicFloat/MusicFloat.entitlements` is empty and
+the app sandbox is disabled in the active project settings. LRCLIB and Apple
+Music web requests work in that unsandboxed mode. If sandboxing is restored for
+default/demo or distribution builds, LRCLIB, Apple Music web lookup, or any
+future cloud translation provider will need a deliberate
+`com.apple.security.network.client` entitlement decision. Apple on-device
+Translation itself should not be used as the reason for that entitlement.
+
+When a cloud translation provider is later added, settings and documentation
+must explain to the user that lyrics may leave the device.
 
 Telemetry must not log:
 
@@ -191,8 +229,15 @@ Expected performance principle: active lyric movement may wake at lyric boundari
 4. Implement an Apple installed-language provider path using `TranslationSession(installedSource:target:)` (available at our 26.5 target).
 5. Add a user-controlled download-capable flow if needed.
 6. Add batch translation and cancellation tests.
-7. Add bounded memory cache for current/recent tracks. The cache key design needs new fields (provider ID, strategy, lyrics source version) that do not exist yet — add them alongside the cache.
-8. Add disk cache after profiling proves it is useful.
+7. Add bounded memory cache for current/recent tracks. Follow-up status: the
+   shared `EphemeralMediaCache` now has bounded in-memory policy primitives,
+   and successful runtime translations are wired through it with privacy-safe
+   provider/document/target cache keys. Provider strategy and future provider
+   model/version fields still need to be added when those choices become real.
+8. Add disk cache after profiling proves it is useful. Follow-up status: an
+   opt-in disk cache now exists for artwork/translation payloads with Settings
+   usage and clear controls. Keep raw lyrics off disk until the privacy policy
+   and product affordance are explicit.
 9. Profile with Logging, Time Profiler, Allocations, Swift Concurrency, SwiftUI, and Power/System Trace.
 10. Consider cloud adapters only after the native path and cache shape are stable.
 
@@ -223,4 +268,3 @@ Local model provider:
 - Apple Natural Language `NLLanguageRecognizer`: https://developer.apple.com/documentation/naturallanguage/nllanguagerecognizer
 - Apple Foundation Models overview: https://developer.apple.com/documentation/foundationmodels/
 - Apple App Sandbox network client entitlement: https://developer.apple.com/documentation/BundleResources/Entitlements/com.apple.security.network.client
-

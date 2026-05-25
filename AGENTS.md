@@ -2,6 +2,33 @@
 
 MusicFloat is a native macOS menu bar app for floating, translated music lyrics. The project is intentionally starting small: keep the first slices architectural, observable, and easy to reverse while leaving room for deeper Apple Music and Music.app experiments later.
 
+## Agent Workflow Checklist
+
+- One lead agent owns the final answer, working tree, and verdict.
+- Keep simple or single-file changes lead-only.
+- Delegate only when the user asked for subagents, delegation, or parallel
+  agent work.
+- Delegate only bounded sidecar investigations or disjoint write scopes.
+- Do not overlap build, test, profile, release, or app-launch commands against
+  the same checkout, DerivedData, trace dirs, performance ledger, or running app.
+- Performance and regression claims require evidence: run IDs, traces, logs,
+  and same-mode comparisons.
+
+## Getting Started With Codex Agents
+
+- Start in single-agent mode: read this file, inspect the smallest relevant
+  tracker, and make the narrow change.
+- Open `.codex/agents/codex-workflow-router.md` only when the task is broad,
+  ambiguous, explicitly asks for agents, or spans independent risk zones.
+- Open one specialist spec at a time, only after the router or task points to
+  it. Shared rules live here; specialist specs should stay domain-specific.
+- If subagents are in flight, treat the current branch as lead-owned. Sidecars
+  may write only an exact disjoint scope; otherwise they return findings for
+  the lead to integrate.
+- The lead rechecks `git status` and the diff before integrating any handoff.
+  If two agents touched the same file or command lane, pause writes and resolve
+  the conflict in the lead thread before continuing.
+
 ## Product Direction
 
 - Build a no-Dock menu bar app with a lightweight floating lyrics overlay.
@@ -30,7 +57,7 @@ The active first slice is:
 
 - `MusicFloat/App/AppState.swift`: app-wide observable state.
 - `MusicFloat/App/MusicFloatApp.swift`: menu bar and settings scenes.
-- `MusicFloat/MenuBar/MenuBarView.swift`: commands only.
+- `MusicFloat/MenuBar/MenuBarStatusItemController.swift`: live AppKit status item and command menu.
 - `MusicFloat/Overlay/FloatingPanelController.swift`: the only long-lived `NSPanel` owner.
 - `MusicFloat/Overlay/LyricsOverlayView.swift`: mocked lyric and translation overlay.
 - `MusicFloat/Settings/SettingsView.swift`: placeholder configuration surface.
@@ -59,6 +86,122 @@ When adding real functionality, prefer these seams:
 
 Keep experimental adapters behind protocols and feature flags. AppleScript, ScriptingBridge, Accessibility, app observation, private-ish inspection, and provider scraping must stay replaceable and easy to disable.
 
+## Codex Agent Workflow
+
+The Codex layer should improve judgment and verification without becoming a
+forced ceremony. One lead agent owns the user-facing answer, the working tree,
+and the final verdict unless a specialist handoff is clearly useful.
+
+Use official OpenAI guidance this way:
+
+- Add rules to `AGENTS.md` when they prevent repeated mistakes, reduce
+  over-reading, or codify recurring review feedback.
+- Use specialist handoffs only when the task needs separate ownership or a
+  bounded second investigation. The lead agent still integrates the result.
+- Turn a workflow into a shared skill only after it has stable inputs, outputs,
+  and two or three concrete repeat-use cases.
+- Keep reliability loops explicit: run relevant checks for code changes, review
+  diffs before handoff, and use traces or reports as durable evidence for
+  profiling/debugging claims.
+
+Default behavior:
+
+- Start with `rg`, targeted file reads, and the smallest relevant tracker.
+- Treat `.codex/agents/*.md` as on-demand specialist specs. Read only the
+  matching spec and any file it explicitly routes to.
+- Do not bulk-read `.codex/DerivedData`, `.codex/traces`, raw live logs, or all
+  reports unless the task is specifically about those artifacts.
+- Prefer read-only diagnostics before commands that launch apps, change Music.app
+  playback, record Instruments traces, install bundles, clean artifacts, or alter
+  permissions.
+- Consider a specialist spec or handoff when a second agent can inspect a
+  separate risk zone with bounded inputs, allowed commands, and a compact
+  verdict.
+
+Do not delegate for a small single-file change, a task where the specialist
+would need the same write scope as the lead, or a command sequence that must own
+the only running MusicFloat/Music.app session.
+
+When multi-agent tools are available, spawn subagents only after the user has
+asked for delegation, subagents, or parallel agent work. Before spawning, the
+lead agent should name the immediate local task it will continue doing, then
+delegate only sidecar work that can run independently. Use explorer-style agents
+for specific read-only codebase questions and worker-style agents only for
+disjoint write scopes. Close subagents when their result is integrated.
+
+Non-interference rules:
+
+- Do not run build, test, profile, release, or app-launch commands in parallel
+  against the same checkout, `.codex/DerivedData`, `.codex/traces`,
+  `reports/performance-runs.jsonl`, or running `cv.MusicFloat` instance.
+- `./script/build_and_run.sh --verify` may build, launch, or stop MusicFloat.
+  Use it for meaningful app verification and avoid overlapping it with profile,
+  live-lyrics, or release identity work.
+- Never run `./script/profile.sh clean`, `script/release_self.sh --install`,
+  `./script/profile.sh ... --drive-music`, broad `pkill`, or broad `killall`
+  unless the user asked for that effect or explicitly approved it.
+- For exploratory profiling or agent-behavior checks, prefer isolated paths:
+
+  ```sh
+  RUN_LEDGER=/tmp/musicfloat-agent/runs.jsonl \
+  TRACE_DIR=/tmp/musicfloat-agent/traces \
+  DERIVED_DATA_DIR=/tmp/musicfloat-agent/DerivedData \
+  ./script/profile.sh sample 20s --demo --scenario overlay-karaoke
+  ```
+
+  Add `--apple-translation` for isolated Translation/NaturalLanguage lane
+  smoke checks; keep those separate from default Release measurements.
+
+  For clean evidence from a dirty checkout, use:
+
+  ```sh
+  script/profile_snapshot.sh -- ./script/profile.sh sample 30s --demo --scenario overlay-karaoke
+  ```
+
+  The snapshot helper creates a temporary detached worktree and isolated
+  profiling artifact paths without committing the main checkout. Add `--run`
+  only when you intentionally want it to build, launch, or profile the app.
+
+  Copy or rerun compact evidence into the tracked ledger only when it becomes
+  durable project evidence.
+
+When handing work to a subagent, include:
+
+- the exact question,
+- allowed paths and commands,
+- forbidden side effects,
+- expected output shape,
+- report paths to update, or a clear `no writes` instruction.
+
+Available repo-local agent specs:
+
+| Spec | Use for |
+| --- | --- |
+| `.codex/agents/codex-workflow-router.md` | Delegation and safety routing. |
+| `.codex/agents/performance-profiler.md` | Performance evidence and regression comparison. |
+| `.codex/agents/build-test-triage.md` | Compiler, test, CI, and Xcode warning failures. |
+| `.codex/agents/live-lyrics-forensics.md` | Live Apple Music lyrics behavior. |
+| `.codex/agents/privacy-entitlements-reviewer.md` | Logs, privacy, sandbox, and entitlements. |
+| `.codex/agents/translation-memory-gatekeeper.md` | Translation framework memory and privacy boundaries. |
+| `.codex/agents/native-panel-auditor.md` | Native overlay/menu bar behavior. |
+| `.codex/agents/release-identity-doctor.md` | Debug/Release/dist/installed bundle identity. |
+| `.codex/agents/provider-cache-boundary-auditor.md` | Provider cache, retry, timeout, and cancellation behavior. |
+| `.codex/agents/report-curator.md` | Durable tracker/report updates. |
+| `.codex/agents/codex-xcode-doctor.md` | Codex/Xcode/MCP tool affordances. |
+| `.codex/agents/parser-fixture-curator.md` | TTML/LRC/parser fixture coverage. |
+| `.codex/agents/musicfloat-agent-check.md` | Final handoff verification and report coherence. |
+
+XcodeBuildMCP is repo-configured in `.xcodebuildmcp/config.yaml` for the
+macOS-first MusicFloat surface: `macos`, `project-discovery`, `coverage`,
+`utilities`, `swift-package`, and `xcode-ide`, with session defaults for
+`MusicFloat.xcodeproj`, scheme `MusicFloat`, macOS/arm64, `.codex/DerivedData`,
+and bundle ID `cv.MusicFloat`. After changing that config, restart or reload
+the Codex session so MCP tool advertisement refreshes. Depending on the Codex
+tool bridge, these capabilities may appear as Xcode or `mcp__xcode__` actions
+rather than a literal `xcodebuildmcp` namespace; use `.codex/agents/codex-xcode-doctor.md`
+and `./script/profile.sh doctor` to distinguish config problems from session
+advertisement problems.
+
 ## Telemetry
 
 Use Apple's unified logging via `Logger`; do not use `print` for app telemetry.
@@ -71,7 +214,7 @@ Use categories consistently:
 - `Settings`
 - `Performance`
 
-Log stable, high-signal events: app launch, menu actions, panel creation/show/hide, settings appearance, future provider milestones, cache eviction, and fallback paths. Do not log secrets, tokens, raw lyrics from real providers, or personal listening history beyond coarse public-safe state.
+Log stable, high-signal events: app launch, menu actions, panel creation/show/hide, settings appearance, future provider milestones, cache eviction, and fallback paths. Keep telemetry concise: prefer counts, provider/source names, privacy-safe lookup IDs, and broad error classes over raw text, raw line payloads, track titles, artist names, or repeated per-line details. Do not log secrets, tokens, raw lyrics from real providers, or personal listening history beyond coarse public-safe state.
 
 Use `AppTelemetry.measure` for short performance spans that should show up as signposts in Instruments, especially panel creation/show/hide, provider calls, lyric sync ticks, cache reads, translation requests, and startup work. Keep signposts coarse; they are for finding shape, not narrating every line of code.
 
@@ -136,9 +279,10 @@ Use the profiler agent spec at `.codex/agents/performance-profiler.md` as the
 task contract. It defines valid evidence, same-mode comparison rules,
 baseline/candidate workflow, report format, and fix boundaries.
 
-When comparing versions, do not claim a regression from mixed modes or
-unverified live traces. Use run IDs from `reports/performance-runs.jsonl`,
-trace paths under `.codex/traces/`, usage CSVs under `.codex/traces/usage/`,
+When comparing versions, do not claim a regression from mixed modes, mixed
+default-vs-`--apple-translation` builds, or unverified live traces. Use run IDs
+from `reports/performance-runs.jsonl`, trace paths under `.codex/traces/`,
+usage CSVs under `.codex/traces/usage/`, compact live verification summaries,
 and `cv.MusicFloat` logs as evidence. Update
 `reports/performance-flaws.md` when a run proves a new flaw, invalidates prior
 evidence, or closes an issue.
@@ -172,6 +316,28 @@ Use:
 ```
 
 before handing off meaningful app changes.
+
+Use:
+
+```sh
+./script/agent_verify.sh
+```
+
+for a full agent handoff gate when the task touches shared runtime behavior,
+tests, scripts, or report-backed performance claims. It runs the test suite,
+fails on unexpected compiler warnings, verifies the app launches, and prints the
+current profiling report/disk summary.
+
+Use:
+
+```sh
+./script/profile.sh doctor
+```
+
+for a read-only Codex/Xcode/app preflight. It checks git state, Xcode,
+`mcpbridge`, Instruments template access, bundle identity, artifact sizes,
+Codex actions, and Music.app live preflight without recording traces, installing
+bundles, cleaning artifacts, or driving playback.
 
 ## Memory And Performance Expectations
 

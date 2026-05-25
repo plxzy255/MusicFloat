@@ -10,7 +10,7 @@ import OSLog
 /// Kept intentionally simpler than PlayStatus's version: no parallel artist
 /// candidate expansion, no scoring tuning. We can add that complexity back if
 /// real-world matching starts missing.
-enum LRCLIBLyricsProvider {
+nonisolated enum LRCLIBLyricsProvider {
     private static let requestTimeout: TimeInterval = 4
     private static let durationMatchWindow: Double = 6
 
@@ -35,14 +35,17 @@ enum LRCLIBLyricsProvider {
         artist: String,
         album: String,
         duration: TimeInterval,
+        lookupID: String? = nil,
         session: URLSession = .shared
     ) async throws -> LyricsDocument? {
-        try await AppTelemetry.measure("LRCLIBLyricsProvider.fetch") {
+        let effectiveLookupID = lookupID ?? Self.makeLookupID()
+        return try await AppTelemetry.measure("LRCLIBLyricsProvider.fetch") {
             try await fetchImpl(
                 title: title,
                 artist: artist,
                 album: album,
                 duration: duration,
+                lookupID: effectiveLookupID,
                 session: session
             )
         }
@@ -53,6 +56,7 @@ enum LRCLIBLyricsProvider {
         artist: String,
         album: String,
         duration: TimeInterval,
+        lookupID: String,
         session: URLSession
     ) async throws -> LyricsDocument? {
         guard !title.isEmpty, !artist.isEmpty else { return nil }
@@ -62,6 +66,7 @@ enum LRCLIBLyricsProvider {
             artist: artist,
             album: album,
             duration: duration,
+            lookupID: lookupID,
             session: session
         ) {
             return exact
@@ -72,6 +77,7 @@ enum LRCLIBLyricsProvider {
             artist: artist,
             album: album,
             duration: duration,
+            lookupID: lookupID,
             session: session
         )
     }
@@ -83,6 +89,7 @@ enum LRCLIBLyricsProvider {
         artist: String,
         album: String,
         duration: TimeInterval,
+        lookupID: String,
         session: URLSession
     ) async throws -> LyricsDocument? {
         var components = URLComponents(string: "https://lrclib.net/api/get")
@@ -98,22 +105,30 @@ enum LRCLIBLyricsProvider {
         request.timeoutInterval = requestTimeout
         request.setValue("MusicFloat/0.1 (+https://github.com)", forHTTPHeaderField: "User-Agent")
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            AppTelemetry.performance.error(
+                "LRCLIB request failed endpoint=exact lookup=\(lookupID, privacy: .public) reason=\(Self.safeNetworkReason(error), privacy: .public)"
+            )
+            throw error
+        }
         guard let http = response as? HTTPURLResponse else { return nil }
         if http.statusCode == 404 { return nil }
         guard (200...299).contains(http.statusCode) else {
             throw URLError(.badServerResponse)
         }
 
-        let decoded = try JSONDecoder().decode(Response.self, from: data)
-        let doc = LyricsParser.parse(
+        let decoded = try await decode(Response.self, from: data)
+        let doc = await parseLyrics(
             synced: decoded.syncedLyrics,
             plain: decoded.plainLyrics,
             source: .lrclib
         )
         if doc != nil {
             AppTelemetry.performance.info(
-                "LRCLIB exact match title=\(title, privacy: .public) artist=\(artist, privacy: .public) duration=\(duration)"
+                "LRCLIB exact match lookup=\(lookupID, privacy: .public) result=hit duration=\(duration, privacy: .public)"
             )
         }
         return doc
@@ -126,6 +141,7 @@ enum LRCLIBLyricsProvider {
         artist: String,
         album: String,
         duration: TimeInterval,
+        lookupID: String,
         session: URLSession
     ) async throws -> LyricsDocument? {
         var components = URLComponents(string: "https://lrclib.net/api/search")
@@ -139,14 +155,22 @@ enum LRCLIBLyricsProvider {
         request.timeoutInterval = requestTimeout
         request.setValue("MusicFloat/0.1 (+https://github.com)", forHTTPHeaderField: "User-Agent")
 
-        let (data, response) = try await session.data(for: request)
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            AppTelemetry.performance.error(
+                "LRCLIB request failed endpoint=search lookup=\(lookupID, privacy: .public) reason=\(Self.safeNetworkReason(error), privacy: .public)"
+            )
+            throw error
+        }
         guard let http = response as? HTTPURLResponse else { return nil }
         if http.statusCode == 404 { return nil }
         guard (200...299).contains(http.statusCode) else {
             throw URLError(.badServerResponse)
         }
 
-        let items = try JSONDecoder().decode([SearchItem].self, from: data)
+        let items = try await decode([SearchItem].self, from: data)
         guard let best = pickBest(
             from: items,
             queryTitle: title,
@@ -156,12 +180,10 @@ enum LRCLIBLyricsProvider {
         ) else {
             return nil
         }
-        // Surface what search fallback chose — common cause of bad-timing
-        // matches is the picker grabbing a different upload of the song.
         AppTelemetry.performance.info(
-            "LRCLIB search fallback chose title=\(best.trackName ?? "?", privacy: .public) artist=\(best.artistName ?? "?", privacy: .public) album=\(best.albumName ?? "?", privacy: .public) duration=\(best.duration ?? 0) queryDuration=\(duration) candidates=\(items.count)"
+            "LRCLIB search fallback chose lookup=\(lookupID, privacy: .public) hasSynced=\((best.syncedLyrics?.isEmpty == false), privacy: .public) duration=\(best.duration ?? 0, privacy: .public) queryDuration=\(duration, privacy: .public) candidates=\(items.count, privacy: .public)"
         )
-        return LyricsParser.parse(
+        return await parseLyrics(
             synced: best.syncedLyrics,
             plain: best.plainLyrics,
             source: .lrclib
@@ -256,5 +278,41 @@ enum LRCLIBLyricsProvider {
         guard !left.isEmpty, !right.isEmpty else { return 0 }
         let shared = left.intersection(right).count
         return Double(shared) / Double(max(left.count, right.count))
+    }
+
+    private static func decode<T: Decodable & Sendable>(_ type: T.Type, from data: Data) async throws -> T {
+        try await Task.detached(priority: .userInitiated) {
+            try JSONDecoder().decode(type, from: data)
+        }.value
+    }
+
+    private static func parseLyrics(
+        synced: String?,
+        plain: String?,
+        source: LyricsSource
+    ) async -> LyricsDocument? {
+        await Task.detached(priority: .userInitiated) {
+            LyricsParser.parse(synced: synced, plain: plain, source: source)
+        }.value
+    }
+
+    private static func safeNetworkReason(_ error: any Error) -> String {
+        guard let urlError = error as? URLError else {
+            return "transport"
+        }
+        switch urlError.code {
+        case .timedOut:
+            return "timedOut"
+        case .cancelled:
+            return "cancelled"
+        case .notConnectedToInternet:
+            return "offline"
+        default:
+            return "urlError-\(urlError.code.rawValue)"
+        }
+    }
+
+    private static func makeLookupID() -> String {
+        String(UUID().uuidString.prefix(8))
     }
 }

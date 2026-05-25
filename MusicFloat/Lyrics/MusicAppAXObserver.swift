@@ -68,7 +68,7 @@ final class MusicAppAXObserver {
         let result = unsafe AXObserverCreate(
             app.processIdentifier,
             { _, _, _, refcon in
-                guard let refcon else { return }
+                guard let refcon = unsafe refcon else { return }
                 let observer = unsafe Unmanaged<MusicAppAXObserver>.fromOpaque(refcon).takeUnretainedValue()
                 Task { @MainActor in observer.onChange?() }
             },
@@ -80,7 +80,7 @@ final class MusicAppAXObserver {
         }
 
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
-        let refcon = Unmanaged.passUnretained(self).toOpaque()
+        let refcon = unsafe Unmanaged.passUnretained(self).toOpaque()
         // kAXSelectedChildrenChangedNotification fires when the active button
         // selection moves; kAXValueChangedNotification picks up label updates
         // for cases where Music swaps the button text in place rather than

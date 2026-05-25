@@ -97,7 +97,7 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
     }
 
     @MainActor
-    func testUntimedDocumentBuildsActiveNextLyricWindow() {
+    func testUntimedDocumentBuildsEstimatedPreviousActiveLyricWindow() {
         let document = LyricsDocument(
             source: .musicApp,
             lines: [
@@ -123,8 +123,8 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
         )
 
         XCTAssertEqual(snapshot.lyricWindow.map(\.id), [10, 11])
-        XCTAssertEqual(snapshot.lyricWindow.map(\.role), [.active, .next])
-        XCTAssertEqual(snapshot.lyricWindow.map(\.translationText), ["First translated", nil])
+        XCTAssertEqual(snapshot.lyricWindow.map(\.role), [.previous, .active])
+        XCTAssertEqual(snapshot.lyricWindow.map(\.translationText), [nil, "Second translated"])
     }
 
     @MainActor
@@ -291,6 +291,45 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
     }
 
     @MainActor
+    func testKaraokeProgressRendersOnlyForSyllableTimedLines() {
+        let lineTimedOnly = LyricLine(
+            id: 0,
+            text: "Line timed lyric",
+            startTime: 10,
+            endTime: 14
+        )
+        let syllableTimed = LyricLine(
+            id: 1,
+            text: "Word timed lyric",
+            startTime: 10,
+            endTime: 14,
+            syllables: [
+                LyricSyllable(text: "Word ", startTime: 10, endTime: 11),
+                LyricSyllable(text: "timed", startTime: 11, endTime: 12)
+            ]
+        )
+
+        XCTAssertFalse(LyricsOverlaySnapshotBuilder.shouldRenderKaraokeProgress(for: lineTimedOnly))
+        XCTAssertTrue(LyricsOverlaySnapshotBuilder.shouldRenderKaraokeProgress(for: syllableTimed))
+    }
+
+    @MainActor
+    func testKaraokeProgressDoesNotRenderForUntimedLinesWithSyllables() {
+        let untimedWithSyllables = LyricLine(
+            id: 0,
+            text: "Untimed word data",
+            startTime: nil,
+            syllables: [
+                LyricSyllable(text: "Untimed ", startTime: 1, endTime: 2),
+                LyricSyllable(text: "word", startTime: 2, endTime: 3)
+            ]
+        )
+
+        XCTAssertFalse(LyricsOverlaySnapshotBuilder.shouldRenderKaraokeProgress(for: untimedWithSyllables))
+        XCTAssertNil(LyricsOverlaySnapshotBuilder.timedLineProgress(in: untimedWithSyllables, at: 2.5))
+    }
+
+    @MainActor
     func testTimedLineProgressReturnsNilWithoutTiming() {
         let line = LyricLine(id: 0, text: "Plain lyric", startTime: nil)
 
@@ -320,7 +359,7 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
     }
 
     @MainActor
-    func testUntimedDocumentRendersFirstPlainLine() {
+    func testUntimedDocumentRendersFirstPlainLineEarlyInTrack() {
         let document = LyricsDocument(
             source: .musicApp,
             lines: [
@@ -331,7 +370,7 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
         )
         let snapshot = LyricsOverlaySnapshotBuilder().makeSnapshot(
             contentState: .ready,
-            playerState: playerState(elapsedTime: 120),
+            playerState: playerState(elapsedTime: 10),
             lyricsDocument: document,
             translation: LyricTranslation(targetLanguageIdentifier: "fr", sourceLanguageIdentifier: "en", lines: []),
             showsTranslation: false,

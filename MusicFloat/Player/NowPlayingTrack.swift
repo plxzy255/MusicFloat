@@ -15,4 +15,20 @@ struct NowPlayingTrack: Equatable, Identifiable, Sendable {
             "\(artist) - \(title)"
         }
     }
+
+    nonisolated var telemetryID: String {
+        Self.telemetryID(for: id)
+    }
+
+    nonisolated static func telemetryID(for rawID: String?) -> String {
+        guard let rawID,
+              !rawID.isEmpty else {
+            return "none"
+        }
+
+        var hasher = Hasher()
+        hasher.combine("now-playing-track-telemetry-v1")
+        hasher.combine(rawID)
+        return "track:\(String(UInt(bitPattern: hasher.finalize()), radix: 16))"
+    }
 }

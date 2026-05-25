@@ -17,6 +17,8 @@ struct MenuBarStatusItemCommands {
 
 @MainActor
 final class MenuBarStatusItemController: NSObject, NSMenuDelegate {
+    private static let maxTrackMenuTitleLength = 72
+
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
     private weak var appState: AppState?
@@ -75,7 +77,8 @@ final class MenuBarStatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(statusItem(title: appState.playerState.statusLine))
         menu.addItem(statusItem(title: "Providers: \(appState.providerRuntimeState.displayName)"))
         menu.addItem(statusItem(title: "Translation: \(appState.translationRuntimeState.displayName)"))
-        menu.addItem(statusItem(title: appState.playerState.track?.displayTitle ?? "No current track"))
+        let trackTitle = appState.playerState.track?.displayTitle ?? "No current track"
+        menu.addItem(statusItem(title: Self.truncatedTrackTitle(trackTitle), toolTip: trackTitle))
 
         menu.addItem(.separator())
         menu.addItem(actionItem(
@@ -179,10 +182,16 @@ final class MenuBarStatusItemController: NSObject, NSMenuDelegate {
         return item
     }
 
-    private func statusItem(title: String) -> NSMenuItem {
+    private func statusItem(title: String, toolTip: String? = nil) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         item.isEnabled = false
+        item.toolTip = toolTip
         return item
+    }
+
+    private static func truncatedTrackTitle(_ title: String) -> String {
+        guard title.count > maxTrackMenuTitleLength else { return title }
+        return "\(title.prefix(maxTrackMenuTitleLength - 3))..."
     }
 
     private func offsetMenuLabel(for appState: AppState) -> String {

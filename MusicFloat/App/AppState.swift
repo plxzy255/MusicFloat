@@ -102,6 +102,10 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
     }
 
     static func timedLineProgress(in line: LyricLine, at effectiveLyricTime: TimeInterval) -> Double? {
+        guard line.startTime != nil else {
+            return nil
+        }
+
         if !line.syllables.isEmpty {
             return syllableProgress(in: line.syllables, at: effectiveLyricTime)
         }
@@ -113,6 +117,10 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
         }
 
         return clampedProgress((effectiveLyricTime - startTime) / (endTime - startTime))
+    }
+
+    static func shouldRenderKaraokeProgress(for line: LyricLine) -> Bool {
+        line.startTime != nil && !line.syllables.isEmpty
     }
 
     func makeSnapshot(
@@ -170,7 +178,8 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
             let effectiveLyricTime = playerState.elapsedTime + lyricOffsetSeconds + lyricsDocument.offsetCorrection
             let activeLine = syncEngine.activeLine(
                 in: lyricsDocument,
-                at: playerState.elapsedTime + lyricOffsetSeconds
+                at: playerState.elapsedTime + lyricOffsetSeconds,
+                duration: playerState.track?.duration
             )
             let lyricText = activeLine?.text ?? "Lyrics unavailable"
             let translationText = activeLine.flatMap { line in
@@ -548,6 +557,9 @@ final class AppState {
         if playerState.track?.id != previousTrackID {
             nowPlayingArtwork = nil
             nowPlayingArtworkTrackID = playerState.track?.id
+            if playerState.track != nil {
+                clearLyricsForTrackChange()
+            }
         }
         // Seed the live tick fields from the authoritative state so
         // the overlay's elapsed reflects it immediately.
@@ -561,7 +573,7 @@ final class AppState {
             return
         }
         guard playerState.track?.id == trackID else {
-            AppTelemetry.performance.info("Ignoring stale now-playing artwork for trackID=\(trackID, privacy: .public)")
+            AppTelemetry.performance.info("Ignoring stale now-playing artwork for track=\(NowPlayingTrack.telemetryID(for: trackID), privacy: .public)")
             return
         }
 
@@ -573,6 +585,12 @@ final class AppState {
     func clearNowPlayingArtwork() {
         nowPlayingArtwork = nil
         nowPlayingArtworkTrackID = nil
+    }
+
+    private func clearLyricsForTrackChange() {
+        lyricsDocument = LyricsDocument(source: .none, lines: [], isTimed: false)
+        clearTranslation()
+        AppTelemetry.performance.info("Lyrics document cleared for new track")
     }
 
     func setMusicVolume(_ volume: Int?) {

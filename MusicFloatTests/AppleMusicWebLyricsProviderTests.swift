@@ -42,6 +42,24 @@ final class AppleMusicWebLyricsProviderTests: XCTestCase {
         XCTAssertEqual(paths[1], "/v1/catalog/us/songs/song-id/syllable-lyrics")
         let query = await stub.queryItems(forRequestAt: 1)
         XCTAssertEqual(query["extend"], "ttmlLocalizations")
+        XCTAssertEqual(query["l"], "fr-fr")
+    }
+
+    func testDedicatedEndpointDoesNotSendStorefrontLanguageWithoutPreferredLyricLanguage() async throws {
+        let stub = AppleMusicHTTPStub(responses: [
+            .storefront(language: "ru-RU"),
+            .dedicated(status: 200, ttml: ttml(language: "en-US", text: "Original"), localizations: [
+                "ru-RU": ttml(language: "ru-RU", text: "Localized")
+            ])
+        ])
+        let provider = provider(stub: stub)
+
+        let document = try await provider.lyrics(for: track())
+
+        XCTAssertEqual(document?.lines.first?.text, "Original")
+        let query = await stub.queryItems(forRequestAt: 1)
+        XCTAssertEqual(query["extend"], "ttmlLocalizations")
+        XCTAssertNil(query["l"])
     }
 
     func testDedicatedEndpointPrefersSyllableTimedPrimaryOverLineTimedLocalization() async throws {
@@ -77,6 +95,24 @@ final class AppleMusicWebLyricsProviderTests: XCTestCase {
         XCTAssertEqual(broadQuery["include[songs]"], "albums,lyrics,syllable-lyrics")
     }
 
+    func testBroadEndpointDoesNotSendStorefrontLanguageWithoutPreferredLyricLanguage() async throws {
+        let stub = AppleMusicHTTPStub(responses: [
+            .storefront(language: "ru-RU"),
+            .dedicated(status: 404, ttml: nil, localizations: [:]),
+            .broad(status: 200, syllableTTML: ttml(language: "en-US", text: "Fallback lyric"))
+        ])
+        let provider = provider(stub: stub)
+
+        let document = try await provider.lyrics(for: track())
+
+        XCTAssertEqual(document?.lines.first?.text, "Fallback lyric")
+        let dedicatedQuery = await stub.queryItems(forRequestAt: 1)
+        let broadQuery = await stub.queryItems(forRequestAt: 2)
+        XCTAssertNil(dedicatedQuery["l"])
+        XCTAssertNil(broadQuery["l"])
+        XCTAssertEqual(broadQuery["include[songs]"], "albums,lyrics,syllable-lyrics")
+    }
+
     func testBroadSongsEndpoint404ReturnsNilAfterDedicatedEndpointMiss() async throws {
         let stub = AppleMusicHTTPStub(responses: [
             .storefront(language: "en-US"),
@@ -93,6 +129,81 @@ final class AppleMusicWebLyricsProviderTests: XCTestCase {
         XCTAssertEqual(paths[2], "/v1/catalog/us/songs/song-id")
     }
 
+    func testCatalogMissSkipsImmediateRetry() async throws {
+        let stub = AppleMusicHTTPStub(responses: [.storefront(language: "en-US")])
+        var catalogCalls = 0
+        let provider = AppleMusicWebLyricsProvider(
+            developerToken: { _ in "developer-token" },
+            mediaUserToken: { "media-user-token" },
+            catalogIdentity: { _, _, _, _, _, _ in
+                catalogCalls += 1
+                return .miss
+            },
+            dataForRequest: { request in
+                try await stub.data(for: request)
+            }
+        )
+
+        let first = try await provider.lyrics(for: track())
+        let second = try await provider.lyrics(for: track())
+
+        XCTAssertNil(first)
+        XCTAssertNil(second)
+
+        XCTAssertEqual(catalogCalls, 1)
+        let paths = await stub.requestPaths()
+        XCTAssertEqual(paths, ["/v1/me/storefront"])
+    }
+
+    func testTransientCatalogFailureThrowsAndDoesNotNegativeCache() async throws {
+        let stub = AppleMusicHTTPStub(responses: [.storefront(language: "en-US")])
+        var catalogCalls = 0
+        let provider = AppleMusicWebLyricsProvider(
+            developerToken: { _ in "developer-token" },
+            mediaUserToken: { "media-user-token" },
+            catalogIdentity: { _, _, _, _, _, _ in
+                catalogCalls += 1
+                return .transientFailure
+            },
+            dataForRequest: { request in
+                try await stub.data(for: request)
+            }
+        )
+
+        for _ in 0..<2 {
+            do {
+                _ = try await provider.lyrics(for: track())
+                XCTFail("Expected transient catalog resolution to throw")
+            } catch let error as AppleMusicWebLyricsProvider.APIError {
+                XCTAssertEqual(error, .transientCatalogResolution)
+            }
+        }
+
+        XCTAssertEqual(catalogCalls, 2)
+        let paths = await stub.requestPaths()
+        XCTAssertEqual(paths, ["/v1/me/storefront"])
+    }
+
+    func testLookupIDPropagatesToCatalogResolution() async throws {
+        let stub = AppleMusicHTTPStub(responses: [.storefront(language: "en-US")])
+        var capturedLookupID: String?
+        let provider = AppleMusicWebLyricsProvider(
+            developerToken: { _ in "developer-token" },
+            mediaUserToken: { "media-user-token" },
+            catalogIdentity: { _, _, _, _, _, lookupID in
+                capturedLookupID = lookupID
+                return .miss
+            },
+            dataForRequest: { request in
+                try await stub.data(for: request)
+            }
+        )
+
+        _ = try await provider.lyrics(for: track(), lookupID: "lookup-123")
+
+        XCTAssertEqual(capturedLookupID, "lookup-123")
+    }
+
     private func provider(
         stub: AppleMusicHTTPStub,
         preferredLyricLanguage: String? = nil
@@ -100,8 +211,8 @@ final class AppleMusicWebLyricsProviderTests: XCTestCase {
         AppleMusicWebLyricsProvider(
             developerToken: { _ in "developer-token" },
             mediaUserToken: { "media-user-token" },
-            catalogIdentity: { _, _, _, storefront, _ in
-                AppleMusicCatalogResolver.Identity(storefront: storefront ?? "us", songID: "song-id")
+            catalogIdentity: { _, _, _, storefront, _, _ in
+                .identity(AppleMusicCatalogResolver.Identity(storefront: storefront ?? "us", songID: "song-id"))
             },
             dataForRequest: { request in
                 try await stub.data(for: request)

@@ -8,7 +8,7 @@ import Foundation
 /// are stored for a future per-word overlay without forcing a re-fetch.
 ///
 /// Time values come in any of: `HH:MM:SS.mmm`, `MM:SS.mmm`, `SS.mmm`, `Ns`.
-enum TTMLParser {
+nonisolated enum TTMLParser {
     static func parse(ttml: String, source: LyricsSource = .appleMusicWeb) -> LyricsDocument? {
         AppTelemetry.measure("TTMLParser.parse") {
             parseImpl(ttml: ttml, source: source)
@@ -256,7 +256,7 @@ enum TTMLParser {
     }
 }
 
-private extension Character {
+nonisolated private extension Character {
     var canStartInferredWordLikeSpan: Bool {
         isWordOrNumber || isOpeningLyricPunctuation
     }
@@ -302,7 +302,7 @@ private extension Character {
     }
 }
 
-private extension String {
+nonisolated private extension String {
     func withPreservedEdgeWhitespace(from source: String) -> String {
         guard !isEmpty else { return self }
         var result = self

@@ -6,7 +6,7 @@ final class ProviderPipelineController {
     /// Backstop poll cadence in case the AX observer doesn't fire (Music not
     /// running yet, panel closed, observer attach failed). Push notifications
     /// from `MusicAppAXObserver` drive the common case at ~event latency.
-    private static let integratedVisibleLyricsRefreshInterval: TimeInterval = 2.0
+    private static let integratedVisibleLyricsRefreshInterval: TimeInterval = 0.75
     /// Cooldown after an AX-observer-driven refresh, so a burst of
     /// notifications doesn't translate into a burst of full AX traversals.
     private static let observerDrivenCooldown: TimeInterval = 0.5
@@ -15,6 +15,7 @@ final class ProviderPipelineController {
 
     private let lyricsProvider: any LyricsProvider
     private let translationProvider: any TranslationProvider
+    private let mediaCache: any MediaCache
     private var loadTask: Task<Void, Never>?
     private var translationTask: Task<Void, Never>?
     private var loadingTrackID: String?
@@ -25,10 +26,12 @@ final class ProviderPipelineController {
 
     init(
         lyricsProvider: any LyricsProvider,
-        translationProvider: any TranslationProvider
+        translationProvider: any TranslationProvider,
+        mediaCache: any MediaCache = EphemeralMediaCache()
     ) {
         self.lyricsProvider = lyricsProvider
         self.translationProvider = translationProvider
+        self.mediaCache = mediaCache
     }
 
     func prepareOverlayContent(appState: AppState) {
@@ -43,7 +46,7 @@ final class ProviderPipelineController {
 
             guard loadTask == nil else {
                 if loadingTrackID == requestedTrackID {
-                    AppTelemetry.performance.notice("Provider pipeline duplicate load ignored trackID=\(requestedTrackID, privacy: .public)")
+                    AppTelemetry.performance.notice("Provider pipeline duplicate load ignored track=\(NowPlayingTrack.telemetryID(for: requestedTrackID), privacy: .public)")
                 }
                 return
             }
@@ -68,7 +71,7 @@ final class ProviderPipelineController {
                     let startedAt = Date()
                     let lyricsResult = await self.lyricsProvider.lyrics(for: track)
                     AppTelemetry.performance.notice(
-                        "Provider lyrics load finished trackID=\(requestedTrackID, privacy: .public) elapsed=\(Date().timeIntervalSince(startedAt), privacy: .public)"
+                        "Provider lyrics load finished track=\(NowPlayingTrack.telemetryID(for: requestedTrackID), privacy: .public) elapsed=\(Date().timeIntervalSince(startedAt), privacy: .public)"
                     )
                     guard !Task.isCancelled else {
                         return
@@ -108,7 +111,7 @@ final class ProviderPipelineController {
         if let trackID = appState.playerState.track?.id,
            loadTask != nil,
            loadingTrackID == trackID {
-            AppTelemetry.performance.notice("Provider refresh skipped; same track already loading trackID=\(trackID, privacy: .public)")
+            AppTelemetry.performance.notice("Provider refresh skipped; same track already loading track=\(NowPlayingTrack.telemetryID(for: trackID), privacy: .public)")
             return
         }
         loadTask?.cancel()
@@ -179,9 +182,10 @@ final class ProviderPipelineController {
 
         let current = appState.lyricsDocument
         if Self.skipsIntegratedVisibleLyricsRefresh(for: current) {
-            // Authoritative timed document straight from Apple. Do not
-            // overwrite with a lagging AX scrape and do not calibrate —
-            // the TTML clock IS ground truth here.
+            // Authoritative document straight from Apple. Timed TTML is clock
+            // ground truth; line-only/plain Apple documents should stay
+            // sentence-first instead of being replaced by a jittery one-line
+            // AX scrape.
             axObserver.stop()
             observedAppState = nil
             return
@@ -313,7 +317,9 @@ final class ProviderPipelineController {
         // Reject implausibly large offsets — usually a chorus-line collision
         // where the AX text matched the wrong repeat.
         guard abs(newOffset) <= 10 else {
-            AppTelemetry.performance.info("LRC calibration rejected offset=\(newOffset) line=\"\(matched.text, privacy: .public)\"")
+            AppTelemetry.performance.info(
+                "LRC calibration rejected offset=\(newOffset, privacy: .public) candidates=\(candidates.count, privacy: .public) lineLength=\(matched.text.count, privacy: .public)"
+            )
             return nil
         }
         guard abs(newOffset - current.offsetCorrection) > 0.05 else {
@@ -324,7 +330,7 @@ final class ProviderPipelineController {
     }
 
     static func skipsIntegratedVisibleLyricsRefresh(for document: LyricsDocument) -> Bool {
-        document.source == .appleMusicWeb && document.isTimed
+        document.source == .appleMusicWeb
     }
 
     private static func normalizeForMatch(_ value: String) -> String {
@@ -378,13 +384,35 @@ final class ProviderPipelineController {
 
         appState.setTranslationRuntimeState(.checkingAvailability)
         let targetLanguageIdentifier = appState.preferredTranslationLanguageIdentifier
+        let translationCacheKey = Self.translationCacheKey(
+            providerIdentifier: translationProvider.displayName,
+            targetLanguageIdentifier: targetLanguageIdentifier,
+            document: document
+        )
         AppTelemetry.performance.notice(
-            "Translation requested trackID=\(requestedTrackID, privacy: .public) target=\(targetLanguageIdentifier, privacy: .public) lines=\(document.lines.count, privacy: .public)"
+            "Translation requested track=\(NowPlayingTrack.telemetryID(for: requestedTrackID), privacy: .public) target=\(targetLanguageIdentifier, privacy: .public) lines=\(document.lines.count, privacy: .public)"
         )
         translationTask = Task { @MainActor [weak self, weak appState] in
             guard let self, let appState else { return }
             defer {
                 self.translationTask = nil
+            }
+
+            if let cachedTranslation = await self.cachedTranslation(for: translationCacheKey) {
+                guard !Task.isCancelled else {
+                    return
+                }
+                guard appState.playerState.track?.id == requestedTrackID,
+                      appState.preferredTranslationLanguageIdentifier == targetLanguageIdentifier else {
+                    AppTelemetry.performance.info("Cached translation ignored because live context changed")
+                    return
+                }
+                AppTelemetry.performance.notice(
+                    "Translation cache hit target=\(cachedTranslation.targetLanguageIdentifier, privacy: .public) lines=\(cachedTranslation.lines.count, privacy: .public)"
+                )
+                appState.applyTranslation(cachedTranslation)
+                appState.setTranslationRuntimeState(.ready)
+                return
             }
 
             appState.setTranslationRuntimeState(.translating)
@@ -408,17 +436,73 @@ final class ProviderPipelineController {
             case .available(let translation):
                 let sourceLanguageIdentifier = translation.sourceLanguageIdentifier ?? "unknown"
                 AppTelemetry.performance.notice(
-                    "Translation ready trackID=\(requestedTrackID, privacy: .public) source=\(sourceLanguageIdentifier, privacy: .public) target=\(translation.targetLanguageIdentifier, privacy: .public) lines=\(translation.lines.count, privacy: .public)"
+                    "Translation ready track=\(NowPlayingTrack.telemetryID(for: requestedTrackID), privacy: .public) source=\(sourceLanguageIdentifier, privacy: .public) target=\(translation.targetLanguageIdentifier, privacy: .public) lines=\(translation.lines.count, privacy: .public)"
                 )
+                await self.storeTranslation(translation, for: translationCacheKey)
                 appState.applyTranslation(translation)
                 appState.setTranslationRuntimeState(.ready)
             case .status(let state):
                 AppTelemetry.performance.notice(
-                    "Translation unavailable trackID=\(requestedTrackID, privacy: .public) state=\(state.displayName, privacy: .public)"
+                    "Translation unavailable track=\(NowPlayingTrack.telemetryID(for: requestedTrackID), privacy: .public) state=\(state.displayName, privacy: .public)"
                 )
                 appState.clearTranslation()
                 appState.setTranslationRuntimeState(state)
             }
+        }
+    }
+
+    static func translationCacheKey(
+        providerIdentifier: String,
+        targetLanguageIdentifier: String,
+        document: LyricsDocument
+    ) -> MediaCacheKey {
+        var components = [
+            providerIdentifier,
+            LyricsDocument.normalizedLanguageIdentifier(targetLanguageIdentifier) ?? targetLanguageIdentifier,
+            document.source.rawValue,
+            document.isTimed ? "timed" : "plain",
+            document.sourceLanguageIdentifier ?? "source-language-unknown"
+        ]
+        for line in document.lines {
+            components.append(String(line.id))
+            components.append(line.text)
+            components.append(cacheComponent(line.startTime))
+            components.append(cacheComponent(line.endTime))
+            for syllable in line.syllables {
+                components.append(syllable.text)
+                components.append(cacheComponent(syllable.startTime))
+                components.append(cacheComponent(syllable.endTime))
+            }
+        }
+
+        return MediaCacheKey(
+            namespace: .translation,
+            rawValue: MediaCacheKey.redactedRawValue(prefix: "translation-v1", components: components)
+        )
+    }
+
+    private static func cacheComponent(_ value: TimeInterval?) -> String {
+        value.map { String($0) } ?? "nil"
+    }
+
+    private func cachedTranslation(for key: MediaCacheKey) async -> LyricTranslation? {
+        guard case .data(let data)? = await mediaCache.value(for: key) else {
+            return nil
+        }
+        do {
+            return try JSONDecoder().decode(LyricTranslation.self, from: data)
+        } catch {
+            AppTelemetry.performance.notice("Translation cache decode failed; provider will refresh")
+            return nil
+        }
+    }
+
+    private func storeTranslation(_ translation: LyricTranslation, for key: MediaCacheKey) async {
+        do {
+            let data = try JSONEncoder().encode(translation)
+            await mediaCache.store(.data(data), for: key)
+        } catch {
+            AppTelemetry.performance.notice("Translation cache encode failed; continuing without cache")
         }
     }
 

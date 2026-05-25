@@ -22,6 +22,14 @@ Use the same mode on both branches when comparing performance:
 - Do not treat `v0.0.3 --demo` vs a modern `--live` trace as regression
   evidence. That compares different subsystems.
 
+Translation is a separate build lane. Default Release/profile builds do not
+compile `ENABLE_APPLE_TRANSLATION` or link Translation/NaturalLanguage. The
+lane is enabled only with `script/profile.sh --apple-translation`,
+`--translation-enabled`, or `ENABLE_APPLE_TRANSLATION_BUILD=1`; the build script
+then appends `$(inherited) ENABLE_APPLE_TRANSLATION`. Ledger rows record this
+as `app.apple_translation_build=true`, and strict comparisons must reject mixed
+default-vs-translation lanes.
+
 ## Live Profiling Requirements
 
 `./script/profile.sh ... --live` now refuses to proceed unless Music.app is
@@ -29,12 +37,15 @@ already running and actively playing a real track. Add `--drive-music` when the
 task is about the live button, live lyrics, seek/skip handling, playback
 freezes, or track-change behavior; it starts Music.app playback if needed and
 performs a seek plus next-track action during the trace. During each trace it
-captures MusicFloat unified logs and verifies:
+captures MusicFloat unified logs. The live log stream includes both the
+`cv.MusicFloat` subsystem and process-level `MusicFloat` lines so network-layer
+messages such as `nw_read_request_report` can be correlated with provider
+lookup IDs when they recur. Verification checks:
 
 - `--live` launch was requested.
 - Live Apple Music bridge started.
 - The initial Music.app prime is playing and has a track.
-- The overlay was toggled visible.
+- The overlay was shown by the menu toggle or the live auto-start path.
 - The overlay view appeared.
 - A non-mock lyrics document was applied.
 - The provider pipeline reached ready state.
@@ -42,8 +53,8 @@ captures MusicFloat unified logs and verifies:
 - Trace disk usage was reported.
 - A per-run CPU/RSS usage CSV was captured.
 
-If any of those checks fails, the trace fails instead of silently becoming a
-demo/default-mode sample.
+If any of those checks fails, the trace/sample fails instead of silently
+becoming a demo/default-mode run.
 
 ## Commands
 
@@ -80,6 +91,33 @@ Collect direct CPU/RSS samples without Instruments:
 ./script/profile.sh sample 30s --live
 ./script/profile.sh sample 30s --live --drive-music --scenario apple-music-driven-karaoke
 ```
+
+Measure the explicit Apple Translation/NaturalLanguage lane separately from
+the default Release baseline:
+
+```sh
+./script/profile.sh sample 30s --demo --apple-translation --scenario translation-enabled-overlay
+./script/profile.sh record "Allocations" 30s --demo --apple-translation --scenario translation-enabled-overlay
+```
+
+The run ledger records this as `app.apple_translation_build=true`; strict
+comparison rejects mixed default-vs-translation builds.
+
+Create a clean temporary snapshot when the main checkout is dirty but the
+current state needs profiling evidence:
+
+```sh
+script/profile_snapshot.sh -- ./script/profile.sh sample 30s --demo --scenario overlay-karaoke
+script/profile_snapshot.sh --run -- ./script/profile.sh sample 30s --demo --apple-translation --scenario translation-enabled-overlay
+script/profile_snapshot.sh --ref main -- ./script/profile.sh sample 30s --demo --scenario overlay-karaoke
+```
+
+The snapshot helper does not commit or clean the main checkout. It creates a
+temporary detached worktree under `/private/tmp`, copies the current tracked and
+untracked non-ignored files into a temporary commit, and points
+`RUN_LEDGER`, `TRACE_DIR`, and `DERIVED_DATA_DIR` at isolated paths outside the
+snapshot worktree. Use `--run` only when you intentionally want it to build,
+launch, or profile the app.
 
 Collect stripped self-release memory when the question is "what does the app in
 /Applications or dist use?":
@@ -146,6 +184,11 @@ Each CSV records timestamp, process ID, RSS in KB, and CPU percentage while the
 trace is running. The script prints sample count plus average/max RSS and CPU
 after every trace, which makes future branch comparisons easier to sanity-check
 before opening Instruments.
+
+Live ledger rows also include compact `live_verification` fields for
+privacy-safe lookup counts, timeout counts, sampled `lookup=` IDs tied to
+timeouts, translation readiness, and translation cache hits. Use those summaries
+before opening raw live logs.
 
 Use `sample` when you only need resource numbers and do not need an Instruments
 bundle. Use `record` or `phased` when you need Instruments timelines.

@@ -11,6 +11,11 @@ branch against a named baseline such as `main`, a tag, a PR branch, or a prior
 run in `reports/performance-runs.jsonl`, then turn the evidence into a short
 diagnosis and a reversible fix plan.
 
+This agent owns performance evidence only. Route privacy, live-lyrics
+correctness, release identity, build/test failures, parser fixtures, or report
+curation to the narrower `.codex/agents/*` specs unless the performance
+measurement itself depends on that context.
+
 Do not optimize from vibes. A useful answer ties every claim to one of:
 
 - a build or test result,
@@ -67,6 +72,9 @@ measurement.
 ## Evidence Rules
 
 - Compare only same-mode and same-scenario runs.
+- Compare only the same Apple Translation build lane. Default Release and
+  `--apple-translation` runs measure different binary dependencies; strict
+  `compare-runs` rejects that mix.
 - Treat `--demo` as a cheap mock-overlay sanity check.
 - Treat `--live` as the meaningful Apple Music path, but only after
   `script/profile.sh` live verification passes.
@@ -87,11 +95,20 @@ measurement.
   explicitly asks to preserve or share them. Commit the compact ledger and
   human-readable report updates, not raw traces.
 - If Music.app playback, lyrics source, overlay visibility, or provider
-  readiness cannot be proven, mark the live run invalid.
+  readiness cannot be proven, mark the live run invalid. Overlay visibility may
+  be proven by the menu toggle path or the live auto-start panel/show logs.
 - For direct `sample` comparisons, prefer repeated baseline/candidate pairs.
   A single pair can support a preliminary regression only when the delta is
   large and there is causal evidence such as changed binary dependencies,
   source ownership, logs, or an Instruments trace.
+- Do not overlap profiling with another agent running build/test/release/live
+  commands in the same checkout. Use isolated `RUN_LEDGER`, `TRACE_DIR`, and
+  `DERIVED_DATA_DIR` for exploratory runs that should not touch tracked
+  evidence.
+- For clean evidence from a dirty checkout, use `script/profile_snapshot.sh`.
+  It snapshots the current tracked and untracked non-ignored files into a
+  temporary detached worktree and isolated profiling artifact paths without
+  committing the main checkout.
 
 ## Standard Commands
 
@@ -107,6 +124,14 @@ Cheap resource comparison:
 ```sh
 ./script/profile.sh sample 30s --demo --scenario overlay-karaoke
 ./script/profile.sh compare-runs <baseline-run-id> <candidate-run-id>
+```
+
+Apple Translation/NaturalLanguage lane:
+
+```sh
+./script/profile.sh sample 30s --demo --apple-translation --scenario translation-enabled-overlay
+./script/profile.sh record "Allocations" 30s --demo --apple-translation --scenario translation-enabled-overlay
+./script/profile.sh compare-runs --strict <baseline-run-id> <candidate-run-id>
 ```
 
 Live Apple Music comparison:
@@ -138,6 +163,8 @@ Artifact hygiene:
 
 ```sh
 ./script/profile.sh disk
+# Run clean only when the user explicitly asks or approves, and only after
+# useful evidence has been preserved or copied into a durable tracker.
 ./script/profile.sh clean
 ```
 
@@ -148,6 +175,16 @@ RUN_LEDGER=/tmp/musicfloat-perf/runs.jsonl \
 TRACE_DIR=/tmp/musicfloat-perf/traces \
 DERIVED_DATA_DIR=/tmp/musicfloat-perf/DerivedData \
 ./script/profile.sh sample 20s --demo --scenario overlay-karaoke
+```
+
+For Apple Translation smoke checks, add `--apple-translation` and keep the
+ledger isolated unless you are deliberately producing durable evidence.
+
+Dirty checkout snapshot:
+
+```sh
+script/profile_snapshot.sh -- ./script/profile.sh sample 30s --demo --scenario overlay-karaoke
+script/profile_snapshot.sh --run -- ./script/profile.sh sample 30s --demo --apple-translation --scenario translation-enabled-overlay
 ```
 
 Use isolated paths when testing agent behavior or avoiding tracked ledger churn.
@@ -213,23 +250,36 @@ Swift/build issues:
    git rev-parse HEAD
    ```
 
-2. If comparing to `main`, create or use a clean baseline worktree:
+2. If comparing the current dirty checkout, create a clean temporary candidate
+   snapshot:
+
+   ```sh
+   script/profile_snapshot.sh -- ./script/profile.sh sample 30s --demo --scenario overlay-karaoke
+   ```
+
+3. If comparing to `main`, create or use a clean baseline worktree:
 
    ```sh
    git fetch origin
    git worktree add ../MusicFloat-baseline origin/main
    ```
 
-3. Choose the command that matches the user-visible path. If the task mentions
+   Or use a temporary read-only snapshot of the local ref:
+
+   ```sh
+   script/profile_snapshot.sh --ref main -- ./script/profile.sh sample 30s --demo --scenario overlay-karaoke
+   ```
+
+4. Choose the command that matches the user-visible path. If the task mentions
    Listen to Apple Music, live lyrics, skipping, seeking, or freeze/hitch
    behavior, use the driven live command, not demo.
-4. Run the same command in the baseline and candidate worktrees.
-5. Use `./script/profile.sh compare-runs` for the numeric delta.
-6. Open Instruments only when the ledger delta points to a real question.
-7. Re-check the candidate `HEAD` and dirty state before writing the verdict.
-8. Update `reports/performance-flaws.md` for proven flaws, invalid evidence,
+5. Run the same command in the baseline and candidate worktrees.
+6. Use `./script/profile.sh compare-runs` for the numeric delta.
+7. Open Instruments only when the ledger delta points to a real question.
+8. Re-check the candidate `HEAD` and dirty state before writing the verdict.
+9. Update `reports/performance-flaws.md` for proven flaws, invalid evidence,
    mitigations, and resolved items.
-9. Mention run IDs in PR notes or handoff summaries.
+10. Mention run IDs in PR notes or handoff summaries.
 
 ## Output Format
 
@@ -273,3 +323,12 @@ Prefer small, reversible patches:
 Avoid broad rewrites, new dependencies, broad permissions, or network provider
 changes during profiling-only work. If a deeper architecture fix is needed,
 write the evidence and recommended slice first.
+
+## Further Research For This Agent
+
+- Identify the smallest same-mode measurement that proves a suspected issue
+  before opening Instruments.
+- Determine whether a finding belongs in `reports/performance-flaws.md`,
+  `reports/bugs-and-issues.md`, or only a temporary local note.
+- Propose a future non-surprising `script/agent_verify.sh` only after the manual
+  verification sequence is stable and does not collide with live/profile runs.

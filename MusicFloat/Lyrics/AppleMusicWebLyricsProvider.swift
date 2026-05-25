@@ -17,13 +17,17 @@ final class AppleMusicWebLyricsProvider {
         String,
         String,
         String?,
-        URLSession
-    ) async -> AppleMusicCatalogResolver.Identity?
+        URLSession,
+        String
+    ) async -> AppleMusicCatalogResolver.Resolution
     private let dataForRequest: (URLRequest) async throws -> (Data, URLResponse)
     private let preferredLyricLanguage: () -> String?
     private var cachedStorefront: String?
     private var cachedLanguage: String?
     private var storefrontFetchedAt: Date = .distantPast
+    private var catalogMisses: [String: Date] = [:]
+    private static let catalogMissTTL: TimeInterval = 10 * 60
+    private static let maxCatalogMissEntries = 128
 
     init(
         session: URLSession = .shared,
@@ -35,8 +39,9 @@ final class AppleMusicWebLyricsProvider {
             String,
             String,
             String?,
-            URLSession
-        ) async -> AppleMusicCatalogResolver.Identity?)? = nil,
+            URLSession,
+            String
+        ) async -> AppleMusicCatalogResolver.Resolution)? = nil,
         dataForRequest: (((URLRequest) async throws -> (Data, URLResponse)))? = nil,
         preferredLyricLanguage: @escaping () -> String? = {
             UserDefaults.standard.string(forKey: "preferredLyricLanguage")
@@ -51,7 +56,8 @@ final class AppleMusicWebLyricsProvider {
                 developerToken: $1,
                 mediaUserToken: $2,
                 cachedStorefront: $3,
-                session: $4
+                session: $4,
+                lookupID: $5
             )
         }
         self.dataForRequest = dataForRequest ?? { try await session.data(for: $0) }
@@ -59,15 +65,17 @@ final class AppleMusicWebLyricsProvider {
     }
 
     /// Returns a TTML-parsed document, `nil` if no lyrics are available for
-    /// this track on this account, or throws on network / auth failures so
-    /// the caller can decide whether to fall back.
-    func lyrics(for track: NowPlayingTrack) async throws -> LyricsDocument? {
-        try await AppTelemetry.measure("AppleMusicWebLyricsProvider.lyrics") {
-            try await lyricsImpl(for: track)
+    /// this track on this account, or throws on network / auth / transient
+    /// resolver failures so the caller can decide whether to fall back without
+    /// poisoning a negative cache.
+    func lyrics(for track: NowPlayingTrack, lookupID: String? = nil) async throws -> LyricsDocument? {
+        let effectiveLookupID = lookupID ?? Self.makeLookupID()
+        return try await AppTelemetry.measure("AppleMusicWebLyricsProvider.lyrics") {
+            try await lyricsImpl(for: track, lookupID: effectiveLookupID)
         }
     }
 
-    private func lyricsImpl(for track: NowPlayingTrack) async throws -> LyricsDocument? {
+    private func lyricsImpl(for track: NowPlayingTrack, lookupID: String) async throws -> LyricsDocument? {
         guard let mediaUserToken = mediaUserToken(),
               !mediaUserToken.isEmpty else {
             return nil
@@ -76,45 +84,77 @@ final class AppleMusicWebLyricsProvider {
 
         // Resolve storefront (once per ~24h is fine — only changes on
         // account-region change).
-        let (storefront, language) = try await ensureStorefront(
+        let (storefront, storefrontLanguage) = try await ensureStorefront(
             developerToken: devToken,
             mediaUserToken: mediaUserToken
         )
+        let requestLanguage = Self.normalizedLanguage(preferredLyricLanguage())
 
-        guard let identity = await catalogIdentity(track, devToken, mediaUserToken, storefront, session) else {
-            AppTelemetry.performance.info("AM web: could not resolve catalog ID for track")
-            return nil
+        let now = Date()
+        if let missedAt = catalogMisses[track.id] {
+            if now.timeIntervalSince(missedAt) < Self.catalogMissTTL {
+                AppTelemetry.performance.info("AM web: catalog ID resolution skipped due to recent miss lookup=\(lookupID, privacy: .public)")
+                return nil
+            }
+            catalogMisses.removeValue(forKey: track.id)
         }
+
+        let identity: AppleMusicCatalogResolver.Identity
+        switch await catalogIdentity(track, devToken, mediaUserToken, storefront, session, lookupID) {
+        case .identity(let resolvedIdentity):
+            identity = resolvedIdentity
+        case .miss:
+            storeCatalogMiss(for: track.id, now: now)
+            AppTelemetry.performance.info("AM web: could not resolve catalog ID lookup=\(lookupID, privacy: .public)")
+            return nil
+        case .transientFailure:
+            AppTelemetry.performance.info("AM web: catalog ID resolution failed transiently lookup=\(lookupID, privacy: .public)")
+            throw APIError.transientCatalogResolution
+        }
+        catalogMisses.removeValue(forKey: track.id)
 
         do {
             return try await fetchLyrics(
                 identity: identity,
-                language: language,
+                storefrontLanguage: storefrontLanguage,
+                requestLanguage: requestLanguage,
                 developerToken: devToken,
-                mediaUserToken: mediaUserToken
+                mediaUserToken: mediaUserToken,
+                lookupID: lookupID
             )
         } catch let error as APIError where error == .unauthorized {
             // Try once more with a freshly minted token in case the cached
             // one rotated mid-session.
-            AppTelemetry.performance.info("AM web: 401, refreshing developer token")
+            AppTelemetry.performance.info("AM web: 401, refreshing developer token lookup=\(lookupID, privacy: .public)")
             let fresh = try await developerToken(true)
             return try await fetchLyrics(
                 identity: identity,
-                language: language,
+                storefrontLanguage: storefrontLanguage,
+                requestLanguage: requestLanguage,
                 developerToken: fresh,
-                mediaUserToken: mediaUserToken
+                mediaUserToken: mediaUserToken,
+                lookupID: lookupID
             )
+        }
+    }
+
+    private func storeCatalogMiss(for trackID: String, now: Date) {
+        catalogMisses[trackID] = now
+        guard catalogMisses.count > Self.maxCatalogMissEntries else { return }
+        let sortedKeys = catalogMisses.sorted { $0.value < $1.value }.map(\.key)
+        for key in sortedKeys.prefix(catalogMisses.count - Self.maxCatalogMissEntries) {
+            catalogMisses.removeValue(forKey: key)
         }
     }
 
     // MARK: - Storefront
 
-    private struct StorefrontResponse: Decodable {
-        struct Datum: Decodable {
+    nonisolated private struct StorefrontResponse: Decodable, Sendable {
+        struct Datum: Decodable, Sendable {
             let id: String
             let attributes: Attributes?
         }
-        struct Attributes: Decodable {
+        struct Attributes: Decodable, Sendable {
             let defaultLanguageTag: String?
         }
         let data: [Datum]
@@ -138,7 +178,7 @@ final class AppleMusicWebLyricsProvider {
         if http.statusCode == 401 || http.statusCode == 403 { throw APIError.unauthorized }
         guard (200...299).contains(http.statusCode) else { throw APIError.badStatus(http.statusCode) }
 
-        let decoded = try JSONDecoder().decode(StorefrontResponse.self, from: data)
+        let decoded = try await Self.decode(StorefrontResponse.self, from: data)
         guard let first = decoded.data.first else { throw APIError.emptyResponse }
         let language = first.attributes?.defaultLanguageTag ?? "en-US"
         cachedStorefront = first.id
@@ -150,11 +190,11 @@ final class AppleMusicWebLyricsProvider {
 
     // MARK: - Lyrics
 
-    private struct SongResponse: Decodable {
-        struct Datum: Decodable {
+    nonisolated private struct SongResponse: Decodable, Sendable {
+        struct Datum: Decodable, Sendable {
             let relationships: Relationships?
         }
-        struct Relationships: Decodable {
+        struct Relationships: Decodable, Sendable {
             let lyrics: LyricsRel?
             let syllableLyrics: LyricsRel?
             enum CodingKeys: String, CodingKey {
@@ -162,28 +202,28 @@ final class AppleMusicWebLyricsProvider {
                 case syllableLyrics = "syllable-lyrics"
             }
         }
-        struct LyricsRel: Decodable {
+        struct LyricsRel: Decodable, Sendable {
             let data: [LyricsDatum]
         }
-        struct LyricsDatum: Decodable {
+        struct LyricsDatum: Decodable, Sendable {
             let attributes: LyricsAttrs?
         }
-        struct LyricsAttrs: Decodable {
+        struct LyricsAttrs: Decodable, Sendable {
             let ttml: String?
             let ttmlLocalizations: TTMLLocalizations?
         }
         let data: [Datum]
     }
 
-    private struct SyllableLyricsResponse: Decodable {
-        struct Datum: Decodable {
+    nonisolated private struct SyllableLyricsResponse: Decodable, Sendable {
+        struct Datum: Decodable, Sendable {
             let attributes: SongResponse.LyricsAttrs?
         }
         let data: [Datum]
     }
 
-    struct TTMLVariant: Equatable {
-        enum Source: String {
+    nonisolated struct TTMLVariant: Equatable, Sendable {
+        enum Source: String, Sendable {
             case primary
             case localization
             case fallbackLyrics
@@ -194,10 +234,10 @@ final class AppleMusicWebLyricsProvider {
         let source: Source
     }
 
-    private enum TTMLLocalizations: Decodable {
+    nonisolated private enum TTMLLocalizations: Decodable, Sendable {
         case values([LocalizedTTML])
 
-        struct LocalizedTTML: Decodable {
+        struct LocalizedTTML: Decodable, Sendable {
             let language: String?
             let ttml: String
 
@@ -265,120 +305,146 @@ final class AppleMusicWebLyricsProvider {
 
     private func fetchLyrics(
         identity: AppleMusicCatalogResolver.Identity,
-        language: String,
+        storefrontLanguage: String,
+        requestLanguage: String?,
         developerToken: String,
-        mediaUserToken: String
+        mediaUserToken: String,
+        lookupID: String
     ) async throws -> LyricsDocument? {
         try await AppTelemetry.measure("AppleMusicWebLyricsProvider.fetchLyrics") {
             try await fetchLyricsImpl(
                 identity: identity,
-                language: language,
+                storefrontLanguage: storefrontLanguage,
+                requestLanguage: requestLanguage,
                 developerToken: developerToken,
-                mediaUserToken: mediaUserToken
+                mediaUserToken: mediaUserToken,
+                lookupID: lookupID
             )
         }
     }
 
     private func fetchLyricsImpl(
         identity: AppleMusicCatalogResolver.Identity,
-        language: String,
+        storefrontLanguage: String,
+        requestLanguage: String?,
         developerToken: String,
-        mediaUserToken: String
+        mediaUserToken: String,
+        lookupID: String
     ) async throws -> LyricsDocument? {
         do {
             if let dedicated = try await fetchDedicatedSyllableLyrics(
                 identity: identity,
-                language: language,
+                storefrontLanguage: storefrontLanguage,
+                requestLanguage: requestLanguage,
                 developerToken: developerToken,
-                mediaUserToken: mediaUserToken
+                mediaUserToken: mediaUserToken,
+                lookupID: lookupID
             ) {
                 return dedicated
             }
-            AppTelemetry.performance.info("AM web: dedicated syllable endpoint fallback reason=no_valid_ttml")
+            AppTelemetry.performance.info("AM web: dedicated syllable endpoint fallback lookup=\(lookupID, privacy: .public) reason=no_valid_ttml")
         } catch let error as APIError where error == .notFound {
-            AppTelemetry.performance.info("AM web: dedicated syllable endpoint fallback reason=404")
+            AppTelemetry.performance.info("AM web: dedicated syllable endpoint fallback lookup=\(lookupID, privacy: .public) reason=404")
         } catch is DecodingError {
-            AppTelemetry.performance.info("AM web: dedicated syllable endpoint fallback reason=decode")
+            AppTelemetry.performance.info("AM web: dedicated syllable endpoint fallback lookup=\(lookupID, privacy: .public) reason=decode")
         }
         return try await fetchBroadLyrics(
             identity: identity,
-            language: language,
+            storefrontLanguage: storefrontLanguage,
+            requestLanguage: requestLanguage,
             developerToken: developerToken,
-            mediaUserToken: mediaUserToken
+            mediaUserToken: mediaUserToken,
+            lookupID: lookupID
         )
     }
 
     private func fetchDedicatedSyllableLyrics(
         identity: AppleMusicCatalogResolver.Identity,
-        language: String,
+        storefrontLanguage: String,
+        requestLanguage: String?,
         developerToken: String,
-        mediaUserToken: String
+        mediaUserToken: String,
+        lookupID: String
     ) async throws -> LyricsDocument? {
         var components = URLComponents(string: "https://amp-api.music.apple.com/v1/catalog/\(identity.storefront)/songs/\(identity.songID)/syllable-lyrics")!
         components.queryItems = [
-            URLQueryItem(name: "l", value: language),
+            requestLanguage.map { URLQueryItem(name: "l", value: $0) },
             URLQueryItem(name: "extend", value: "ttmlLocalizations")
-        ]
+        ].compactMap { $0 }
         guard let url = components.url else { return nil }
 
-        let decoded = try await fetchDecoded(SyllableLyricsResponse.self, url: url, developerToken: developerToken, mediaUserToken: mediaUserToken)
+        let decoded = try await fetchDecoded(SyllableLyricsResponse.self, url: url, developerToken: developerToken, mediaUserToken: mediaUserToken, lookupID: lookupID)
         let variants = variants(from: decoded.data.first?.attributes)
-        AppTelemetry.performance.info("AM web: endpoint=syllable-lyrics localization_count=\(Self.localizationCount(in: variants))")
-        return selectAndParse(variants: variants, storefrontLanguage: language, endpoint: "syllable-lyrics")
+        AppTelemetry.performance.info("AM web: endpoint=syllable-lyrics lookup=\(lookupID, privacy: .public) localization_count=\(Self.localizationCount(in: variants))")
+        return await selectAndParse(variants: variants, storefrontLanguage: storefrontLanguage, endpoint: "syllable-lyrics", lookupID: lookupID)
     }
 
     private func fetchBroadLyrics(
         identity: AppleMusicCatalogResolver.Identity,
-        language: String,
+        storefrontLanguage: String,
+        requestLanguage: String?,
         developerToken: String,
-        mediaUserToken: String
+        mediaUserToken: String,
+        lookupID: String
     ) async throws -> LyricsDocument? {
         var components = URLComponents(string: "https://amp-api.music.apple.com/v1/catalog/\(identity.storefront)/songs/\(identity.songID)")!
-        components.queryItems = [
-            URLQueryItem(name: "include[songs]", value: "albums,lyrics,syllable-lyrics"),
-            URLQueryItem(name: "l", value: language)
+        var queryItems = [
+            URLQueryItem(name: "include[songs]", value: "albums,lyrics,syllable-lyrics")
         ]
+        if let requestLanguage {
+            queryItems.append(URLQueryItem(name: "l", value: requestLanguage))
+        }
+        components.queryItems = queryItems
         guard let url = components.url else { return nil }
 
         let decoded: SongResponse
         do {
-            decoded = try await fetchDecoded(SongResponse.self, url: url, developerToken: developerToken, mediaUserToken: mediaUserToken)
+            decoded = try await fetchDecoded(SongResponse.self, url: url, developerToken: developerToken, mediaUserToken: mediaUserToken, lookupID: lookupID)
         } catch let error as APIError where error == .notFound {
-            AppTelemetry.performance.info("AM web: songs-include fallback endpoint returned 404")
+            AppTelemetry.performance.info("AM web: songs-include fallback endpoint returned 404 lookup=\(lookupID, privacy: .public)")
             return nil
         }
         // Prefer syllable lyrics — they're a superset of plain timed lyrics
-        // and carry the word-level timing for future per-syllable rendering.
+        // and carry the word-level timing used by the overlay progress mask.
         var lyricVariants = variants(from: decoded.data.first?.relationships?.syllableLyrics?.data.first?.attributes)
         if lyricVariants.isEmpty,
            let attrs = decoded.data.first?.relationships?.lyrics?.data.first?.attributes {
             lyricVariants = variants(from: attrs, primarySource: TTMLVariant.Source.fallbackLyrics)
         }
-        AppTelemetry.performance.info("AM web: endpoint=songs-include localization_count=\(Self.localizationCount(in: lyricVariants))")
-        guard let document = selectAndParse(variants: lyricVariants, storefrontLanguage: language, endpoint: "songs-include") else {
-            AppTelemetry.performance.info("AM web: catalog row has no lyrics ttml")
+        AppTelemetry.performance.info("AM web: endpoint=songs-include lookup=\(lookupID, privacy: .public) localization_count=\(Self.localizationCount(in: lyricVariants))")
+        guard let document = await selectAndParse(variants: lyricVariants, storefrontLanguage: storefrontLanguage, endpoint: "songs-include", lookupID: lookupID) else {
+            AppTelemetry.performance.info("AM web: catalog row has no lyrics ttml lookup=\(lookupID, privacy: .public)")
             return nil
         }
         return document
     }
 
-    private func fetchDecoded<T: Decodable>(
+    private func fetchDecoded<T: Decodable & Sendable>(
         _ type: T.Type,
         url: URL,
         developerToken: String,
-        mediaUserToken: String
+        mediaUserToken: String,
+        lookupID: String
     ) async throws -> T {
         var req = URLRequest(url: url)
         req.timeoutInterval = 6
         applyAuthHeaders(to: &req, developerToken: developerToken, mediaUserToken: mediaUserToken)
 
-        let (data, response) = try await dataForRequest(req)
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await dataForRequest(req)
+        } catch {
+            AppTelemetry.performance.error(
+                "AM web request failed endpoint=\(Self.endpointFamily(for: url), privacy: .public) lookup=\(lookupID, privacy: .public) reason=\(Self.safeNetworkReason(error), privacy: .public)"
+            )
+            throw error
+        }
         guard let http = response as? HTTPURLResponse else { throw APIError.transport }
         if http.statusCode == 401 || http.statusCode == 403 { throw APIError.unauthorized }
         if http.statusCode == 404 { throw APIError.notFound }
         guard (200...299).contains(http.statusCode) else { throw APIError.badStatus(http.statusCode) }
 
-        return try JSONDecoder().decode(type, from: data)
+        return try await Self.decode(type, from: data)
     }
 
     private func variants(
@@ -400,26 +466,26 @@ final class AppleMusicWebLyricsProvider {
     private func selectAndParse(
         variants: [TTMLVariant],
         storefrontLanguage: String,
-        endpoint: String
-    ) -> LyricsDocument? {
-        let parseable = variants.compactMap { variant -> (variant: TTMLVariant, document: LyricsDocument)? in
-            guard !variant.ttml.isEmpty,
-                  let document = TTMLParser.parse(ttml: variant.ttml) else {
-                return nil
-            }
-            return (variant, document)
-        }
+        endpoint: String,
+        lookupID: String
+    ) async -> LyricsDocument? {
+        let preferredLanguage = preferredLyricLanguage()
+        let parseable = await Self.parseTTMLVariants(variants)
         guard let selected = Self.selectBestParsedTTML(
             from: parseable,
-            preferredLyricLanguage: preferredLyricLanguage(),
+            preferredLyricLanguage: preferredLanguage,
             storefrontLanguage: storefrontLanguage
         ) else {
             return nil
         }
         AppTelemetry.performance.info(
-            "AM web: selected endpoint=\(endpoint, privacy: .public) source=\(selected.variant.source.rawValue, privacy: .public) language=\(selected.variant.language ?? "unknown", privacy: .public) syllable_count=\(Self.syllableCount(in: selected.document), privacy: .public)"
+            "AM web: selected endpoint=\(endpoint, privacy: .public) lookup=\(lookupID, privacy: .public) source=\(selected.variant.source.rawValue, privacy: .public) language=\(selected.variant.language ?? "unknown", privacy: .public) syllable_count=\(Self.syllableCount(in: selected.document), privacy: .public)"
         )
         return selected.document
+    }
+
+    private static func makeLookupID() -> String {
+        String(UUID().uuidString.prefix(8))
     }
 
     static func selectBestParsedTTML(
@@ -484,7 +550,57 @@ final class AppleMusicWebLyricsProvider {
         document.lines.reduce(0) { $0 + $1.syllables.count }
     }
 
-    private static func normalizedLanguage(_ language: String?) -> String? {
+    nonisolated private static func decode<T: Decodable & Sendable>(_ type: T.Type, from data: Data) async throws -> T {
+        try await Task.detached(priority: .userInitiated) {
+            try JSONDecoder().decode(type, from: data)
+        }.value
+    }
+
+    nonisolated private static func parseTTMLVariants(
+        _ variants: [TTMLVariant]
+    ) async -> [(variant: TTMLVariant, document: LyricsDocument)] {
+        await Task.detached(priority: .userInitiated) {
+            variants.compactMap { variant -> (variant: TTMLVariant, document: LyricsDocument)? in
+                guard !variant.ttml.isEmpty,
+                      let document = TTMLParser.parse(ttml: variant.ttml) else {
+                    return nil
+                }
+                return (variant, document)
+            }
+        }.value
+    }
+
+    private static func endpointFamily(for url: URL) -> String {
+        let path = url.path
+        if path.contains("/syllable-lyrics") {
+            return "syllable-lyrics"
+        }
+        if path.contains("/songs/") {
+            return "songs"
+        }
+        if path.contains("/me/storefront") {
+            return "storefront"
+        }
+        return "unknown"
+    }
+
+    private static func safeNetworkReason(_ error: any Error) -> String {
+        guard let urlError = error as? URLError else {
+            return "transport"
+        }
+        switch urlError.code {
+        case .timedOut:
+            return "timedOut"
+        case .cancelled:
+            return "cancelled"
+        case .notConnectedToInternet:
+            return "offline"
+        default:
+            return "urlError-\(urlError.code.rawValue)"
+        }
+    }
+
+    nonisolated private static func normalizedLanguage(_ language: String?) -> String? {
         guard let language else { return nil }
         let trimmed = language.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed.replacingOccurrences(of: "_", with: "-").lowercased()
@@ -511,5 +627,6 @@ final class AppleMusicWebLyricsProvider {
         case notFound
         case badStatus(Int)
         case emptyResponse
+        case transientCatalogResolution
     }
 }

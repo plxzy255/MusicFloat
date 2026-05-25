@@ -1,0 +1,29 @@
+schemaVersion: 1
+
+# XcodeBuildMCP advertises only enabled workflows to MCP clients. Keep this
+# macOS-first so MusicFloat gets the complete macOS build/test/run surface
+# without loading simulator/device/iOS UI-automation tools by default.
+enabledWorkflows:
+  - macos
+  - project-discovery
+  - coverage
+  - utilities
+  - swift-package
+  - xcode-ide
+
+experimentalWorkflowDiscovery: true
+disableSessionDefaults: false
+
+sessionDefaults:
+  projectPath: "./MusicFloat.xcodeproj"
+  scheme: "MusicFloat"
+  configuration: "Debug"
+  platform: "macOS"
+  arch: "arm64"
+  derivedDataPath: ".codex/DerivedData"
+  bundleId: "cv.MusicFloat"
+
+incrementalBuildsEnabled: false
+filePathRenderStyle: "tree"
+showTestTiming: true
+sentryDisabled: true
