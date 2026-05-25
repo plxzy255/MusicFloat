@@ -1,64 +1,101 @@
+import AppKit
 import OSLog
 import SwiftUI
 
 @main
 @MainActor
 struct MusicFloatApp: App {
-    @State private var appState = AppState()
-    private let liveProviderPipelineControllerStore = LiveProviderPipelineControllerStore()
-    private let panelController = FloatingPanelController()
+    private let appController = MusicFloatAppController()
+
+    var body: some Scene {
+        Settings {
+            SettingsView(
+                appState: appController.appState,
+                onTranslationPreferencesChanged: appController.translationPreferencesChanged,
+                onTranslationPreparationCompleted: appController.retryTranslationAfterPreparation
+            )
+        }
+    }
+}
+
+@MainActor
+private final class MusicFloatAppController {
+    let appState: AppState
+
+    private let liveProviderPipelineControllerStore: LiveProviderPipelineControllerStore
+    private let panelController: FloatingPanelController
     private let playerController: PlayerController
     private let mockProviderPipelineController: ProviderPipelineController
+    private let artworkProvider: AppleMusicArtworkProvider
+    private let statusItemController: MenuBarStatusItemController
+    private let settingsWindowController: SettingsWindowController
 
     init() {
+        appState = AppState()
+        liveProviderPipelineControllerStore = LiveProviderPipelineControllerStore()
+        panelController = FloatingPanelController()
+
         let mockAdapters = RuntimeAdapterFactory.makeAdapters(for: .architectureDefault)
         playerController = PlayerController(bridge: mockAdapters.musicBridge)
         mockProviderPipelineController = ProviderPipelineController(
             lyricsProvider: mockAdapters.lyricsProvider,
             translationProvider: mockAdapters.translationProvider
         )
+        artworkProvider = AppleMusicArtworkProvider()
+        statusItemController = MenuBarStatusItemController()
+        settingsWindowController = SettingsWindowController()
+
+        statusItemController.install(
+            appState: appState,
+            commands: MenuBarStatusItemCommands(
+                toggleOverlay: { [weak self] in self?.toggleOverlay() },
+                toggleMockPreview: { [weak self] in self?.toggleMockPreview() },
+                toggleLiveAppleMusic: { [weak self] in self?.toggleLiveAppleMusic() },
+                nudgeLyricOffset: { [weak self] delta in self?.nudgeLyricOffset(by: delta) },
+                resetLyricOffset: { [weak self] in self?.resetLyricOffset() },
+                clearAllPerTrackOffsets: { [weak self] in self?.clearAllPerTrackOffsets() },
+                resetMockPlayback: { [weak self] in self?.resetMockPlayback() },
+                setOverlayContentState: { [weak self] state in self?.setOverlayContentState(state) },
+                openSettings: { [weak self] in self?.openSettingsWindow() },
+                quit: { [weak self] in self?.quit() }
+            )
+        )
+
         AppTelemetry.lifecycle.info("MusicFloat app initialized")
 
         if CommandLine.arguments.contains("--demo") {
-            AppTelemetry.lifecycle.info("Demo mode requested — auto-starting overlay with mock preview in 500ms")
-            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) { [self] in
-                toggleOverlay()
+            AppTelemetry.lifecycle.info("Demo mode requested - auto-starting overlay with mock preview in 500ms")
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self] in
+                self?.toggleOverlay()
             }
         }
 
         if CommandLine.arguments.contains("--live") {
-            AppTelemetry.lifecycle.info("Live mode requested — auto-starting Live Apple Music mode and overlay in 500ms")
-            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) { [self] in
-                toggleLiveAppleMusic()
-                toggleOverlay()
+            AppTelemetry.lifecycle.info("Live mode requested - auto-starting Live Apple Music mode and overlay in 500ms")
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self] in
+                self?.toggleLiveAppleMusic()
             }
         }
     }
 
-    var body: some Scene {
-        MenuBarExtra("MusicFloat", systemImage: "music.note") {
-            MenuBarView(
-                appState: appState,
-                toggleOverlay: toggleOverlay,
-                toggleMockPreview: toggleMockPreview,
-                toggleLiveAppleMusic: toggleLiveAppleMusic,
-                nudgeLyricOffset: { [appState] delta in appState.nudgeLyricOffset(by: delta) },
-                resetLyricOffset: { [appState] in appState.resetLyricOffset() },
-                clearAllPerTrackOffsets: { [appState] in appState.clearAllPerTrackOffsets() },
-                resetMockPlayback: resetMockPlayback,
-                setOverlayContentState: setOverlayContentState,
-                quit: quit
-            )
-        }
-        .menuBarExtraStyle(.menu)
+    private func openSettingsWindow() {
+        settingsWindowController.show(
+            appState: appState,
+            onTranslationPreferencesChanged: { [weak self] in self?.translationPreferencesChanged() },
+            onTranslationPreparationCompleted: { [weak self] in self?.retryTranslationAfterPreparation() }
+        )
+    }
 
-        Settings {
-            SettingsView(
-                appState: appState,
-                onTranslationPreferencesChanged: translationPreferencesChanged,
-                onTranslationPreparationCompleted: retryTranslationAfterPreparation
-            )
-        }
+    private func nudgeLyricOffset(by delta: Double) {
+        appState.nudgeLyricOffset(by: delta)
+    }
+
+    private func resetLyricOffset() {
+        appState.resetLyricOffset()
+    }
+
+    private func clearAllPerTrackOffsets() {
+        appState.clearAllPerTrackOffsets()
     }
 
     private func toggleOverlay() {
@@ -70,7 +107,10 @@ struct MusicFloatApp: App {
                 playerController.startMockPreview(appState: appState)
             }
             activeProviderPipelineController.prepareOverlayContent(appState: appState)
-            panelController.show(appState: appState)
+            panelController.show(
+                appState: appState,
+                onTranslationPreparationCompleted: { [weak self] in self?.retryTranslationAfterPreparation() }
+            )
             playerController.overlayVisibilityChanged(true, appState: appState)
         } else {
             mockProviderPipelineController.stopHiddenWork(appState: appState)
@@ -93,11 +133,18 @@ struct MusicFloatApp: App {
         if appState.isLiveModeRunning {
             playerController.stopLiveAppleMusic(appState: appState)
             liveProviderPipelineControllerStore.current?.stopHiddenWork(appState: appState)
+            artworkProvider.cancel(appState: appState) { [weak self] in
+                self?.statusItemController.refreshStatusIcon()
+            }
             appState.runtimeFeatureFlags = .architectureDefault
         } else {
             let liveProviderPipelineController = getLiveProviderPipelineController()
             appState.runtimeFeatureFlags = .liveAppleMusic
-            playerController.startLiveAppleMusic(appState: appState) { [appState, liveProviderPipelineController] track in
+            showOverlayForLiveAppleMusicIfNeeded()
+            playerController.startLiveAppleMusic(appState: appState) { [weak self, appState, artworkProvider, liveProviderPipelineController] track in
+                artworkProvider.refreshArtwork(for: track, appState: appState) { [weak self] in
+                    self?.statusItemController.refreshStatusIcon()
+                }
                 guard track != nil else {
                     AppTelemetry.performance.info("Live track payload empty; preserving current lyrics state")
                     liveProviderPipelineController.cancelInFlightLoadPreservingState(appState: appState)
@@ -109,26 +156,41 @@ struct MusicFloatApp: App {
                     return
                 }
                 liveProviderPipelineController.refreshOverlayContentForLiveTrack(appState: appState)
+                self?.statusItemController.refreshStatusIcon()
             } onLiveTick: { [appState, liveProviderPipelineController] in
                 liveProviderPipelineController.refreshIntegratedVisibleLyrics(appState: appState)
             }
         }
+
+        statusItemController.refreshStatusIcon()
+    }
+
+    private func showOverlayForLiveAppleMusicIfNeeded() {
+        guard !appState.isOverlayVisible else { return }
+        appState.isOverlayVisible = true
+        AppTelemetry.windowing.notice("Showing lyrics overlay for Live Apple Music")
+        panelController.show(
+            appState: appState,
+            onTranslationPreparationCompleted: { [weak self] in self?.retryTranslationAfterPreparation() }
+        )
+        playerController.overlayVisibilityChanged(true, appState: appState)
     }
 
     private func resetMockPlayback() {
         appState.resetMockPlayback()
+        statusItemController.refreshStatusIcon()
     }
 
     private func setOverlayContentState(_ state: OverlayContentState) {
         appState.setOverlayContentState(state)
     }
 
-    private func translationPreferencesChanged() {
+    func translationPreferencesChanged() {
         guard appState.isOverlayVisible else { return }
         activeProviderPipelineController.refreshTranslation(appState: appState)
     }
 
-    private func retryTranslationAfterPreparation() {
+    func retryTranslationAfterPreparation() {
         guard appState.isOverlayVisible,
               appState.playerState.track != nil else {
             return
@@ -142,6 +204,9 @@ struct MusicFloatApp: App {
         liveProviderPipelineControllerStore.current?.stopHiddenWork(appState: appState)
         playerController.stopMockPreview(appState: appState)
         playerController.stopLiveAppleMusic(appState: appState)
+        artworkProvider.cancel(appState: appState) { [weak self] in
+            self?.statusItemController.refreshStatusIcon()
+        }
         panelController.hide()
         NSApplication.shared.terminate(nil)
     }

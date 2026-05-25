@@ -43,7 +43,47 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
         XCTAssertEqual(snapshot.contentState, .ready)
         XCTAssertEqual(snapshot.lyricText, "Translation follows, soft and native")
         XCTAssertEqual(snapshot.translationText, "La traduction suit, douce et native")
+        XCTAssertEqual(snapshot.attributionText, "Mock lyrics - \(languageName("en")) to \(languageName("fr"))")
         XCTAssertEqual(snapshot.widthPreset, .medium)
+    }
+
+    @MainActor
+    func testReadySnapshotAttributionShowsTranslatedSourceAndTarget() {
+        let document = LyricsDocument(
+            source: .appleMusicWeb,
+            lines: [LyricLine(id: 0, text: "Привет", startTime: 0)],
+            isTimed: true,
+            sourceLanguageIdentifier: "ru"
+        )
+        let translation = LyricTranslation(
+            targetLanguageIdentifier: "en",
+            sourceLanguageIdentifier: "ru",
+            lines: [TranslatedLyricLine(id: 0, sourceLineID: 0, text: "Hello")]
+        )
+        let playerState = PlayerState(
+            playbackStatus: .playing,
+            track: NowPlayingTrack(
+                id: "track",
+                title: "Track",
+                artist: "Artist",
+                album: "",
+                duration: 120,
+                providerName: "Apple Music"
+            ),
+            elapsedTime: 0,
+            updatedAt: Date()
+        )
+
+        let snapshot = LyricsOverlaySnapshotBuilder().makeSnapshot(
+            contentState: .ready,
+            playerState: playerState,
+            lyricsDocument: document,
+            translation: translation,
+            showsTranslation: true,
+            widthPreset: .medium
+        )
+
+        XCTAssertEqual(snapshot.attributionText, "Apple Music - \(languageName("ru")) to \(languageName("en"))")
     }
 
     @MainActor
@@ -192,5 +232,9 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
         var state = MockMusicAppBridge.previewState
         state.elapsedTime = elapsedTime
         return state
+    }
+
+    private func languageName(_ identifier: String) -> String {
+        Locale.current.localizedString(forIdentifier: identifier) ?? identifier
     }
 }

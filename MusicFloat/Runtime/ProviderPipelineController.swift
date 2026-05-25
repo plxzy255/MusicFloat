@@ -341,6 +341,9 @@ final class ProviderPipelineController {
 
         appState.setTranslationRuntimeState(.checkingAvailability)
         let targetLanguageIdentifier = appState.preferredTranslationLanguageIdentifier
+        AppTelemetry.performance.notice(
+            "Translation requested trackID=\(requestedTrackID, privacy: .public) target=\(targetLanguageIdentifier, privacy: .public) lines=\(document.lines.count, privacy: .public)"
+        )
         translationTask = Task { @MainActor [weak self, weak appState] in
             guard let self, let appState else { return }
             defer {
@@ -366,9 +369,16 @@ final class ProviderPipelineController {
 
             switch translationResult {
             case .available(let translation):
+                let sourceLanguageIdentifier = translation.sourceLanguageIdentifier ?? "unknown"
+                AppTelemetry.performance.notice(
+                    "Translation ready trackID=\(requestedTrackID, privacy: .public) source=\(sourceLanguageIdentifier, privacy: .public) target=\(translation.targetLanguageIdentifier, privacy: .public) lines=\(translation.lines.count, privacy: .public)"
+                )
                 appState.applyTranslation(translation)
                 appState.setTranslationRuntimeState(.ready)
             case .status(let state):
+                AppTelemetry.performance.notice(
+                    "Translation unavailable trackID=\(requestedTrackID, privacy: .public) state=\(state.displayName, privacy: .public)"
+                )
                 appState.clearTranslation()
                 appState.setTranslationRuntimeState(state)
             }

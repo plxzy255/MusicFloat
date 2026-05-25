@@ -3,6 +3,8 @@ import OSLog
 #if ENABLE_APPLE_TRANSLATION
 import NaturalLanguage
 @preconcurrency @unsafe import Translation
+
+extension TranslationSession.Request: @unchecked @retroactive Sendable {}
 #endif
 
 struct TranslatedLyricLine: Equatable, Identifiable, Sendable {
@@ -101,6 +103,14 @@ struct TranslationResponsePayload: Equatable, Sendable {
     let sourceLanguageIdentifier: String?
     let targetLanguageIdentifier: String
     let text: String
+}
+
+fileprivate func normalizedTranslationComparableText(_ text: String) -> String {
+    text
+        .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+        .components(separatedBy: .whitespacesAndNewlines)
+        .joined()
+        .trimmingCharacters(in: .punctuationCharacters)
 }
 
 @MainActor
@@ -292,7 +302,8 @@ final class AppleTranslationProvider: TranslationProvider {
                     let text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !text.isEmpty else { return false }
                     guard let source = sourceByID[response.lineID] else { return false }
-                    return !Self.normalizedText(text).elementsEqual(Self.normalizedText(source))
+                    return !normalizedTranslationComparableText(text)
+                        .elementsEqual(normalizedTranslationComparableText(source))
                 }
                 .sorted { $0.lineID < $1.lineID }
                 .enumerated()
@@ -368,14 +379,62 @@ final class AppleTranslationProvider: TranslationProvider {
         #endif
     }
 
-    private static func normalizedText(_ text: String) -> String {
-        text
-            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
-            .components(separatedBy: .whitespacesAndNewlines)
-            .joined()
-            .trimmingCharacters(in: .punctuationCharacters)
-    }
 }
+
+#if ENABLE_APPLE_TRANSLATION
+@MainActor
+enum PreparedTranslationSessionTranslator {
+    static func translation(
+        using session: TranslationSession,
+        for document: LyricsDocument,
+        targetLanguageIdentifier: String
+    ) async throws -> LyricTranslation? {
+        let requests = document.lines.compactMap { line -> (lineID: LyricLine.ID, text: String)? in
+            let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return nil }
+            return (line.id, text)
+        }
+        guard !requests.isEmpty else { return nil }
+
+        let batch = requests.map { request in
+            TranslationSession.Request(
+                sourceText: request.text,
+                clientIdentifier: String(request.lineID)
+            )
+        }
+        let responses = try await session.translations(from: batch)
+        let sourceByID = Dictionary(uniqueKeysWithValues: requests)
+        let translatedLines = responses
+            .compactMap { response -> (lineID: LyricLine.ID, sourceLanguageIdentifier: String, text: String)? in
+                guard let clientIdentifier = response.clientIdentifier,
+                      let lineID = Int(clientIdentifier),
+                      let source = sourceByID[lineID] else {
+                    return nil
+                }
+                let text = response.targetText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty,
+                      !normalizedTranslationComparableText(text)
+                        .elementsEqual(normalizedTranslationComparableText(source)) else {
+                    return nil
+                }
+                return (lineID, response.sourceLanguage.minimalIdentifier, text)
+            }
+            .sorted { $0.lineID < $1.lineID }
+        guard !translatedLines.isEmpty else { return nil }
+
+        return LyricTranslation(
+            targetLanguageIdentifier: LyricsDocument.normalizedLanguageIdentifier(targetLanguageIdentifier)
+                ?? targetLanguageIdentifier,
+            sourceLanguageIdentifier: translatedLines.first?.sourceLanguageIdentifier
+                ?? document.sourceLanguageIdentifier,
+            lines: translatedLines.enumerated().map { offset, line in
+                TranslatedLyricLine(id: offset, sourceLineID: line.lineID, text: line.text)
+            }
+        )
+    }
+
+}
+#endif
 
 @MainActor
 struct ExperimentalTranslationProviderPlaceholder: TranslationProvider {

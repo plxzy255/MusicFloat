@@ -98,6 +98,13 @@ struct LyricsDocument: Equatable, Sendable {
         )
     }
 
+    func hasSameTranslationContent(as other: LyricsDocument) -> Bool {
+        source == other.source
+            && lines == other.lines
+            && isTimed == other.isTimed
+            && sourceLanguageIdentifier == other.sourceLanguageIdentifier
+    }
+
     static func normalizedLanguageIdentifier(_ identifier: String?) -> String? {
         guard let identifier else { return nil }
         let normalized = identifier

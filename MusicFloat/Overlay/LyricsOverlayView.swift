@@ -1,13 +1,36 @@
 import OSLog
 import SwiftUI
+#if ENABLE_APPLE_TRANSLATION
+@preconcurrency @unsafe import Translation
+#endif
 
 struct LyricsOverlayView: View {
     @Bindable var appState: AppState
+    var onTranslationPreparationCompleted: () -> Void = {}
+    #if ENABLE_APPLE_TRANSLATION
+    @State private var preparationConfiguration: TranslationSession.Configuration?
+    @State private var activePreparationIdentifier: String?
+    @State private var preparedTranslationIdentifiers: Set<String> = []
+    #endif
 
     var body: some View {
+        #if ENABLE_APPLE_TRANSLATION
+        content
+            .translationTask(preparationConfiguration) { session in
+                await prepareTranslationLanguages(with: session)
+            }
+            .task(id: translationPreparationRequestIdentifier) {
+                scheduleTranslationPreparationIfNeeded()
+            }
+        #else
+        content
+        #endif
+    }
+
+    private var content: some View {
         let snapshot = appState.overlaySnapshot
 
-        ZStack {
+        return ZStack {
             VStack(alignment: .leading, spacing: 9) {
                 HStack(spacing: 8) {
                     Text(snapshot.contentState.displayName)
@@ -55,11 +78,91 @@ struct LyricsOverlayView: View {
         .contentShape(Rectangle())
         .onAppear {
             AppTelemetry.windowing.info("Lyrics overlay view appeared")
+            #if ENABLE_APPLE_TRANSLATION
+            scheduleTranslationPreparationIfNeeded()
+            #endif
         }
         .onDisappear {
             AppTelemetry.windowing.info("Lyrics overlay view disappeared")
         }
     }
+
+    #if ENABLE_APPLE_TRANSLATION
+    private var translationPreparationRequestIdentifier: String? {
+        guard let download = appState.pendingTranslationDownload else { return nil }
+        return "\(download.source)->\(download.target)"
+    }
+
+    private func scheduleTranslationPreparationIfNeeded() {
+        guard let download = appState.pendingTranslationDownload else { return }
+        let identifier = "\(download.source)->\(download.target)"
+        guard activePreparationIdentifier != identifier else { return }
+        guard !preparedTranslationIdentifiers.contains(identifier) else { return }
+
+        activePreparationIdentifier = identifier
+        preparationConfiguration = TranslationSession.Configuration(
+            source: Locale.Language(identifier: download.source),
+            target: Locale.Language(identifier: download.target),
+            preferredStrategy: .lowLatency
+        )
+        AppTelemetry.windowing.notice(
+            "Overlay translation preparation requested source=\(download.source, privacy: .public) target=\(download.target, privacy: .public)"
+        )
+    }
+
+    private func prepareTranslationLanguages(with session: TranslationSession) async {
+        let document = appState.lyricsDocument
+        let targetLanguageIdentifier = appState.preferredTranslationLanguageIdentifier
+        let activeTrackID = appState.playerState.track?.id
+
+        do {
+            try await session.prepareTranslation()
+            if let activePreparationIdentifier {
+                preparedTranslationIdentifiers.insert(activePreparationIdentifier)
+            }
+            preparationConfiguration = nil
+            activePreparationIdentifier = nil
+            AppTelemetry.windowing.notice("Overlay translation preparation completed")
+
+            appState.setTranslationRuntimeState(.translating)
+            if let translation = try await PreparedTranslationSessionTranslator.translation(
+                using: session,
+                for: document,
+                targetLanguageIdentifier: targetLanguageIdentifier
+            ) {
+                guard appState.playerState.track?.id == activeTrackID,
+                      appState.lyricsDocument.hasSameTranslationContent(as: document),
+                      appState.preferredTranslationLanguageIdentifier == targetLanguageIdentifier else {
+                    AppTelemetry.windowing.notice("Prepared translation ignored because live context changed")
+                    appState.setTranslationRuntimeState(.idle)
+                    onTranslationPreparationCompleted()
+                    return
+                }
+                appState.applyTranslation(translation)
+                appState.setTranslationRuntimeState(.ready)
+                AppTelemetry.windowing.notice(
+                    "Prepared translation ready source=\(translation.sourceLanguageIdentifier ?? "unknown", privacy: .public) target=\(translation.targetLanguageIdentifier, privacy: .public) lines=\(translation.lines.count, privacy: .public)"
+                )
+                return
+            }
+
+            appState.setTranslationRuntimeState(.idle)
+            onTranslationPreparationCompleted()
+        } catch is CancellationError {
+            preparationConfiguration = nil
+            activePreparationIdentifier = nil
+            appState.setTranslationRuntimeState(.idle)
+            AppTelemetry.windowing.info("Overlay translation preparation cancelled")
+        } catch {
+            preparationConfiguration = nil
+            activePreparationIdentifier = nil
+            let detail = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+            let reason = detail.isEmpty ? "Translation preparation failed" : "Translation preparation failed: \(detail)"
+            appState.setTranslationRuntimeState(.failed(reason))
+            AppTelemetry.windowing.error("Overlay translation preparation failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+    #endif
 
     private func stateTint(for state: OverlayContentState) -> Color {
         switch state {

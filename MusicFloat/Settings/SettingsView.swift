@@ -25,12 +25,40 @@ struct SettingsView: View {
         #if ENABLE_APPLE_TRANSLATION
         settingsForm
             .translationTask(preparationConfiguration) { session in
+                let document = appState.lyricsDocument
+                let targetLanguageIdentifier = appState.preferredTranslationLanguageIdentifier
+                let activeTrackID = appState.playerState.track?.id
                 do {
                     try await session.prepareTranslation()
                     preparationConfiguration = nil
+                    AppTelemetry.settings.info("Translation preparation completed")
+
+                    appState.setTranslationRuntimeState(.translating)
+                    if let translation = try await PreparedTranslationSessionTranslator.translation(
+                        using: session,
+                        for: document,
+                        targetLanguageIdentifier: targetLanguageIdentifier
+                    ) {
+                        guard appState.playerState.track?.id == activeTrackID,
+                              appState.lyricsDocument.hasSameTranslationContent(as: document),
+                              appState.preferredTranslationLanguageIdentifier == targetLanguageIdentifier else {
+                            AppTelemetry.settings.info("Prepared translation ignored because live context changed")
+                            appState.setTranslationRuntimeState(.idle)
+                            onTranslationPreparationCompleted()
+                            return
+                        }
+                        appState.applyTranslation(translation)
+                        appState.setTranslationRuntimeState(.ready)
+                        AppTelemetry.settings.info("Prepared translation completed")
+                        return
+                    }
+
                     appState.setTranslationRuntimeState(.idle)
                     onTranslationPreparationCompleted()
-                    AppTelemetry.settings.info("Translation preparation completed")
+                } catch is CancellationError {
+                    preparationConfiguration = nil
+                    appState.setTranslationRuntimeState(.idle)
+                    AppTelemetry.settings.info("Translation preparation cancelled")
                 } catch {
                     preparationConfiguration = nil
                     let reason = Self.translationFailureMessage(
