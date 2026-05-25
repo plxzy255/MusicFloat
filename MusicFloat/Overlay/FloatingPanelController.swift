@@ -8,18 +8,21 @@ final class FloatingPanelController {
 
     func show(
         appState: AppState,
-        onTranslationPreparationCompleted: @escaping () -> Void = {}
+        onTranslationPreparationCompleted: @escaping () -> Void = {},
+        playbackCommands: LyricsOverlayPlaybackCommands = .disabled
     ) {
         AppTelemetry.measure("FloatingPanelShow") {
             let didCreatePanel = panel == nil
             let panel = panel ?? makePanel(
                 appState: appState,
-                onTranslationPreparationCompleted: onTranslationPreparationCompleted
+                onTranslationPreparationCompleted: onTranslationPreparationCompleted,
+                playbackCommands: playbackCommands
             )
             self.panel = panel
             updateContent(
                 appState: appState,
                 onTranslationPreparationCompleted: onTranslationPreparationCompleted,
+                playbackCommands: playbackCommands,
                 in: panel
             )
             applySize(appState: appState, to: panel)
@@ -44,7 +47,7 @@ final class FloatingPanelController {
     }
 
     private func applySize(appState: AppState, to panel: NSPanel) {
-        let panelSize = NSSize(width: appState.overlayWidthPreset.width, height: 172)
+        let panelSize = NSSize(width: appState.overlayWidthPreset.width, height: LyricsOverlayLayout.panelHeight)
         panel.setContentSize(panelSize)
         panel.contentView?.frame = NSRect(origin: .zero, size: panelSize)
     }
@@ -52,24 +55,27 @@ final class FloatingPanelController {
     private func updateContent(
         appState: AppState,
         onTranslationPreparationCompleted: @escaping () -> Void,
+        playbackCommands: LyricsOverlayPlaybackCommands,
         in panel: NSPanel
     ) {
         guard let hostingView = panel.contentView as? NSHostingView<LyricsOverlayView> else { return }
         hostingView.rootView = LyricsOverlayView(
             appState: appState,
-            onTranslationPreparationCompleted: onTranslationPreparationCompleted
+            onTranslationPreparationCompleted: onTranslationPreparationCompleted,
+            playbackCommands: playbackCommands
         )
     }
 
     private func makePanel(
         appState: AppState,
-        onTranslationPreparationCompleted: @escaping () -> Void
+        onTranslationPreparationCompleted: @escaping () -> Void,
+        playbackCommands: LyricsOverlayPlaybackCommands
     ) -> NSPanel {
         AppTelemetry.measure("FloatingPanelCreate") {
             AppTelemetry.windowing.info("Create floating panel")
             let panelWidth = CGFloat(appState.overlayWidthPreset.width)
             let panel = NSPanel(
-                contentRect: NSRect(x: 0, y: 0, width: panelWidth, height: 172),
+                contentRect: NSRect(x: 0, y: 0, width: panelWidth, height: LyricsOverlayLayout.panelHeight),
                 styleMask: [.borderless, .nonactivatingPanel],
                 backing: .buffered,
                 defer: false
@@ -86,9 +92,10 @@ final class FloatingPanelController {
 
             let hostingView = NSHostingView(rootView: LyricsOverlayView(
                 appState: appState,
-                onTranslationPreparationCompleted: onTranslationPreparationCompleted
+                onTranslationPreparationCompleted: onTranslationPreparationCompleted,
+                playbackCommands: playbackCommands
             ))
-            hostingView.frame = NSRect(x: 0, y: 0, width: panelWidth, height: 172)
+            hostingView.frame = NSRect(x: 0, y: 0, width: panelWidth, height: LyricsOverlayLayout.panelHeight)
             hostingView.autoresizingMask = [.width, .height]
             panel.contentView = hostingView
 

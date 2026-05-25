@@ -72,12 +72,64 @@ final class AppleTranslationProviderTests: XCTestCase {
     func testSourceEqualsTargetReturnsStatus() async {
         let provider = AppleTranslationProvider(dependencies: .init(
             availability: { _, _ in XCTFail("Matching source/target should not check availability"); return .installed },
-            translate: { _, _, _ in XCTFail("Matching source/target should not translate"); return [] }
+            translate: { _, _, _ in XCTFail("Matching source/target should not translate"); return [] },
+            inferSourceLanguageIdentifier: { _ in "en" }
         ))
 
         let result = await provider.translation(for: document(), targetLanguageIdentifier: "en-US")
 
         XCTAssertEqual(result, .status(.sourceEqualsTarget))
+    }
+
+    func testSuspiciousMatchingSourceTargetMetadataUsesInferredSourceLanguage() async {
+        var availabilitySource: String?
+        var translationSource: String?
+        let provider = AppleTranslationProvider(dependencies: .init(
+            availability: { source, _ in
+                availabilitySource = source.minimalIdentifier
+                return .installed
+            },
+            translate: { source, target, requests in
+                translationSource = source.minimalIdentifier
+                return [
+                    TranslationResponsePayload(
+                        lineID: requests[0].lineID,
+                        sourceLanguageIdentifier: source.minimalIdentifier,
+                        targetLanguageIdentifier: target.minimalIdentifier,
+                        text: "Years later, I was near the Scandalo"
+                    )
+                ]
+            },
+            inferSourceLanguageIdentifier: { _ in "fr" }
+        ))
+
+        let result = await provider.translation(
+            for: document(
+                lines: [
+                    LyricLine(
+                        id: 5,
+                        text: "Des annees plus tard, j'etais vers le Scandalo",
+                        startTime: nil
+                    )
+                ],
+                sourceLanguageIdentifier: "en"
+            ),
+            targetLanguageIdentifier: "en"
+        )
+
+        XCTAssertEqual(availabilitySource, "fr")
+        XCTAssertEqual(translationSource, "fr")
+        XCTAssertEqual(result, .available(LyricTranslation(
+            targetLanguageIdentifier: "en",
+            sourceLanguageIdentifier: "fr",
+            lines: [
+                TranslatedLyricLine(
+                    id: 0,
+                    sourceLineID: 5,
+                    text: "Years later, I was near the Scandalo"
+                )
+            ]
+        )))
     }
 
     func testMissingSourceDetectionReturnsUnavailable() async {
@@ -155,12 +207,15 @@ final class AppleTranslationProviderTests: XCTestCase {
         XCTAssertEqual(result, .status(.failed("Translation failed: session unavailable")))
     }
 
-    private func document(lines: [LyricLine] = [LyricLine(id: 0, text: "Hello there", startTime: nil)]) -> LyricsDocument {
+    private func document(
+        lines: [LyricLine] = [LyricLine(id: 0, text: "Hello there", startTime: nil)],
+        sourceLanguageIdentifier: String? = "en"
+    ) -> LyricsDocument {
         LyricsDocument(
             source: .musicApp,
             lines: lines,
             isTimed: false,
-            sourceLanguageIdentifier: "en"
+            sourceLanguageIdentifier: sourceLanguageIdentifier
         )
     }
 }

@@ -3,6 +3,8 @@ import OSLog
 
 @MainActor
 final class PlayerController {
+    private static let commandRefreshAttempts = 6
+    private static let commandRefreshDelayNanoseconds: UInt64 = 200_000_000
     private static let hiddenIdleRefreshInterval: TimeInterval = 60
     /// How often we re-pull `player position` from Music.app while live and
     /// playing, to correct any drift that has accumulated since the last
@@ -20,15 +22,21 @@ final class PlayerController {
     private static let liveTickMinimum: TimeInterval = 0.03
 
     private let bridge: any MusicAppBridge
+    private let liveBridgeFactory: @MainActor () -> any MusicAppBridge
     private var refreshTask: Task<Void, Never>?
     private var liveTask: Task<Void, Never>?
     private var liveTickTask: Task<Void, Never>?
-    private var liveBridge: PublicAppleMusicAppBridge?
+    private var liveBridge: (any MusicAppBridge)?
     private var liveTickCallback: (@MainActor () -> Void)?
+    private var liveTrackChangedCallback: (@MainActor (NowPlayingTrack?) -> Void)?
     private let syncEngine = LyricsSyncEngine()
 
-    init(bridge: any MusicAppBridge) {
+    init(
+        bridge: any MusicAppBridge,
+        liveBridgeFactory: @escaping @MainActor () -> any MusicAppBridge = { PublicAppleMusicAppBridge() }
+    ) {
         self.bridge = bridge
+        self.liveBridgeFactory = liveBridgeFactory
     }
 
     // MARK: - Live Apple Music
@@ -47,9 +55,10 @@ final class PlayerController {
         guard liveTask == nil else { return }
         stopMockPreview(appState: appState)
 
-        let bridge = PublicAppleMusicAppBridge()
+        let bridge = liveBridgeFactory()
         liveBridge = bridge
         liveTickCallback = onLiveTick
+        liveTrackChangedCallback = onTrackChanged
         appState.setLiveModeRunning(true)
         AppTelemetry.performance.info("Live Apple Music bridge started")
 
@@ -57,6 +66,7 @@ final class PlayerController {
             guard let self, let appState else { return }
 
             let initial = await bridge.currentState()
+            appState.setMusicVolume(await bridge.currentVolume())
             AppTelemetry.performance.info(
                 "Live prime: status=\(initial.playbackStatus.rawValue, privacy: .public) hasTrack=\(initial.track != nil) elapsed=\(initial.elapsedTime) musicRunning=\(AppleMusicEventListener.isMusicAppRunning)"
             )
@@ -110,7 +120,137 @@ final class PlayerController {
         liveTickTask = nil
         liveBridge = nil
         liveTickCallback = nil
+        liveTrackChangedCallback = nil
+        appState?.setMusicVolume(nil)
+        appState?.setPlaybackCommandInFlight(false)
         appState?.setLiveModeRunning(false)
+    }
+
+    @discardableResult
+    func performLivePlaybackCommand(
+        _ command: MusicPlaybackCommand,
+        appState: AppState,
+        isDemoMode: Bool = false
+    ) async -> PlayerState? {
+        let command = normalizedCommand(command, appState: appState)
+        guard !isDemoMode else {
+            AppTelemetry.performance.notice(
+                "Playback command ignored in demo mode command=\(command.telemetryName, privacy: .public)"
+            )
+            return nil
+        }
+        guard appState.isLiveModeRunning, let liveBridge else {
+            AppTelemetry.performance.notice(
+                "Playback command ignored because live mode is unavailable command=\(command.telemetryName, privacy: .public)"
+            )
+            return nil
+        }
+        guard !appState.isPlaybackCommandInFlight else {
+            AppTelemetry.performance.notice(
+                "Playback command ignored because another command is in flight command=\(command.telemetryName, privacy: .public)"
+            )
+            return nil
+        }
+
+        AppTelemetry.performance.info(
+            "Playback command started command=\(command.telemetryName, privacy: .public)"
+        )
+        appState.setPlaybackCommandInFlight(true)
+        defer {
+            appState.setPlaybackCommandInFlight(false)
+        }
+
+        let result = await liveBridge.perform(command)
+        guard result.isSuccess else {
+            logPlaybackCommandFailure(result, command: command)
+            return nil
+        }
+
+        AppTelemetry.performance.info(
+            "Playback command succeeded command=\(command.telemetryName, privacy: .public)"
+        )
+
+        if case .setVolume(let volume) = command {
+            appState.setMusicVolume(volume)
+            if let refreshedVolume = await liveBridge.currentVolume() {
+                appState.setMusicVolume(refreshedVolume)
+            }
+            return nil
+        }
+
+        let previousTrackID = appState.playerState.track?.id
+        let refreshedState = await refreshedStateAfterPlaybackCommand(
+            command,
+            previousTrackID: previousTrackID,
+            bridge: liveBridge
+        )
+        appState.updatePlayerState(refreshedState)
+        if refreshedState.track?.id != previousTrackID {
+            liveTrackChangedCallback?(refreshedState.track)
+        }
+        restartLiveTick(appState: appState, onLiveTick: liveTickCallback)
+        return refreshedState
+    }
+
+    private func normalizedCommand(
+        _ command: MusicPlaybackCommand,
+        appState: AppState
+    ) -> MusicPlaybackCommand {
+        switch command {
+        case .seek(let position):
+            return .seek(MusicPlaybackCommand.clampedPlaybackPosition(
+                position,
+                duration: appState.playerState.track?.duration
+            ))
+        default:
+            return command.clamped
+        }
+    }
+
+    private func refreshedStateAfterPlaybackCommand(
+        _ command: MusicPlaybackCommand,
+        previousTrackID: String?,
+        bridge: any MusicAppBridge
+    ) async -> PlayerState {
+        var latestState = await bridge.currentState()
+
+        let shouldWaitForChangedSnapshot: (PlayerState) -> Bool = { state in
+            switch command {
+            case .nextTrack, .previousTrack:
+                guard let previousTrackID else { return false }
+                return state.track?.id == previousTrackID
+            case .seek(let position):
+                guard let previousTrackID, state.track?.id == previousTrackID else { return false }
+                return abs(state.elapsedTime - position) > 0.35
+            case .playPause, .setVolume:
+                return false
+            }
+        }
+
+        for _ in 1..<Self.commandRefreshAttempts where shouldWaitForChangedSnapshot(latestState) {
+            try? await Task.sleep(nanoseconds: Self.commandRefreshDelayNanoseconds)
+            latestState = await bridge.currentState()
+        }
+
+        return latestState
+    }
+
+    private func logPlaybackCommandFailure(
+        _ result: MusicPlaybackCommandResult,
+        command: MusicPlaybackCommand
+    ) {
+        switch result {
+        case .succeeded:
+            break
+        case .unavailable(let reason):
+            AppTelemetry.performance.notice(
+                "Playback command unavailable command=\(command.telemetryName, privacy: .public) reason=\(reason, privacy: .public)"
+            )
+        case .failed(let reason):
+            AppTelemetry.performance.error(
+                "Playback command failed command=\(command.telemetryName, privacy: .public) reason=\(reason, privacy: .public)"
+            )
+        }
     }
 
     /// Called by the app when overlay visibility changes so we don't burn

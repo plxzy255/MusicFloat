@@ -14,10 +14,14 @@ INSTALL_TARGET="/Applications/$APP_NAME.app"
 usage() {
   cat >&2 <<'EOF'
 usage:
-  script/release_self.sh [--install] [--open] [--memory] [--status]
+  script/release_self.sh [--install] [--open] [--memory] [--demo] [--live] [--drive-music] [--memory-duration seconds] [--status]
 
 Builds a local Release app bundle into dist/MusicFloat.app with release-strip
 postprocessing enabled. --install copies that bundle to /Applications.
+--memory launches and samples the stripped bundle. Use --demo or --live to pass
+that launch mode to the app; --memory-duration controls sample length.
+--drive-music with --live seeks and attempts a next-track action during the
+sample, which changes active Music.app playback.
 --status prints the project, installed app, and running process identity.
 EOF
 }
@@ -26,6 +30,9 @@ install_app=false
 open_app=false
 sample_memory=false
 show_status=false
+memory_duration=2
+launch_args=()
+drive_music=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -38,6 +45,23 @@ while [[ $# -gt 0 ]]; do
     --memory)
       open_app=true
       sample_memory=true
+      ;;
+    --demo)
+      launch_args+=(--demo)
+      ;;
+    --live)
+      launch_args+=(--live)
+      ;;
+    --drive-music)
+      drive_music=true
+      ;;
+    --memory-duration)
+      if [[ $# -lt 2 || ! "$2" =~ ^[0-9]+$ || "$2" -lt 1 ]]; then
+        echo "Error: --memory-duration requires a positive integer number of seconds" >&2
+        exit 2
+      fi
+      memory_duration="$2"
+      shift
       ;;
     --status)
       show_status=true
@@ -53,6 +77,19 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
+
+if [[ "$drive_music" == true ]]; then
+  live_requested=false
+  for arg in "${launch_args[@]}"; do
+    if [[ "$arg" == "--live" ]]; then
+      live_requested=true
+    fi
+  done
+  if [[ "$live_requested" == false ]]; then
+    echo "Error: --drive-music requires --live" >&2
+    exit 2
+  fi
+fi
 
 status() {
   echo "[project]"
@@ -108,22 +145,93 @@ wait_for_pid() {
 
 sample_process_memory() {
   local pid="$1"
-  /bin/ps -o pid=,rss=,vsz=,command= -p "$pid" | /usr/bin/awk '
-    {
-      rss_mb = $2 / 1024
-      vsz_mb = $3 / 1024
-      printf "pid=%s rss=%.1fMB vsz=%.1fMB command=", $1, rss_mb, vsz_mb
-      for (i = 4; i <= NF; i++) {
-        printf "%s%s", $i, (i == NF ? ORS : OFS)
+  local duration="${2:-2}"
+  local sample_file
+  local sample_count=0
+  sample_file="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/musicfloat-release-memory.XXXXXX")"
+
+  while [[ "$sample_count" -lt "$duration" ]]; do
+    if ! /bin/kill -0 "$pid" 2>/dev/null; then
+      echo "memory_sample_stopped pid=$pid reason=process_exited sample=$((sample_count + 1))"
+      break
+    fi
+
+    local ps_output
+    ps_output="$(/bin/ps -o pid=,rss=,vsz=,command= -p "$pid" 2>/dev/null || true)"
+    if [[ -z "$ps_output" ]]; then
+      echo "memory_sample_stopped pid=$pid reason=process_unavailable sample=$((sample_count + 1))"
+      break
+    fi
+
+    printf '%s\n' "$ps_output" | /usr/bin/awk \
+      -v sample="$((sample_count + 1))" \
+      -v sample_file="$sample_file" '
+      {
+        rss_mb = $2 / 1024
+        vsz_mb = $3 / 1024
+        printf "sample=%s pid=%s rss=%.1fMB vsz=%.1fMB command=", sample, $1, rss_mb, vsz_mb
+        for (i = 4; i <= NF; i++) {
+          printf "%s%s", $i, (i == NF ? ORS : OFS)
+        }
+        printf "%.3f\n", rss_mb >> sample_file
+      }'
+    sample_count=$((sample_count + 1))
+    if [[ "$sample_count" -lt "$duration" ]]; then
+      /bin/sleep 1
+    fi
+  done
+
+  /usr/bin/awk '
+    NR == 1 { min = max = $1 }
+    { sum += $1; if ($1 < min) min = $1; if ($1 > max) max = $1 }
+    END {
+      if (NR > 0) {
+        printf "rss_summary samples=%d avg=%.1fMB min=%.1fMB max=%.1fMB\n", NR, sum / NR, min, max
       }
-    }'
-  /usr/bin/vmmap -summary "$pid" 2>/dev/null | /usr/bin/awk '
+    }' "$sample_file"
+  /bin/rm -f "$sample_file"
+
+  local vmmap_output
+  vmmap_output="$(/usr/bin/vmmap -summary "$pid" 2>/dev/null || true)"
+  if [[ -z "$vmmap_output" ]]; then
+    echo "vmmap_summary_unavailable pid=$pid"
+    return 0
+  fi
+
+  printf '%s\n' "$vmmap_output" | /usr/bin/awk '
     /Physical footprint:/ {
       print "physical_footprint=" $3
     }
     /Physical footprint \(peak\):/ {
       print "physical_footprint_peak=" $4
     }'
+}
+
+drive_music_during_sample() {
+  (
+    /bin/sleep 5
+    /usr/bin/osascript <<'APPLESCRIPT' >/dev/null 2>&1 || true
+tell application id "com.apple.Music"
+  if it is running then
+    try
+      set player position to (player position + 15)
+    end try
+  end if
+end tell
+APPLESCRIPT
+
+    /bin/sleep 8
+    /usr/bin/osascript <<'APPLESCRIPT' >/dev/null 2>&1 || true
+tell application id "com.apple.Music"
+  if it is running then
+    try
+      next track
+    end try
+  end if
+end tell
+APPLESCRIPT
+  ) &
+  echo "$!"
 }
 
 if [[ "$show_status" == true && "$install_app" == false && "$open_app" == false && "$sample_memory" == false ]]; then
@@ -177,13 +285,33 @@ if [[ "$open_app" == true ]]; then
     launch_bundle="$INSTALL_TARGET"
   fi
 
-  /usr/bin/open -n "$launch_bundle"
+  if [[ "${#launch_args[@]}" -gt 0 ]]; then
+    /usr/bin/open -n "$launch_bundle" --args "${launch_args[@]}"
+  else
+    /usr/bin/open -n "$launch_bundle"
+  fi
   pid="$(wait_for_pid "$launch_bundle")"
   echo "pid=$pid"
+  if [[ "${#launch_args[@]}" -gt 0 ]]; then
+    printf "launch_args="
+    printf "%q " "${launch_args[@]}"
+    printf "\n"
+  fi
 
   if [[ "$sample_memory" == true ]]; then
     /bin/sleep 2
-    sample_process_memory "$pid"
+    driver_pid=""
+    if [[ "$drive_music" == true ]]; then
+      driver_pid="$(drive_music_during_sample)"
+      echo "music_driver_pid=$driver_pid"
+    fi
+    sample_process_memory "$pid" "$memory_duration"
+    if [[ -n "$driver_pid" ]]; then
+      if /bin/kill -0 "$driver_pid" >/dev/null 2>&1; then
+        /bin/kill "$driver_pid" >/dev/null 2>&1 || true
+      fi
+      /bin/wait "$driver_pid" 2>/dev/null || true
+    fi
   fi
 fi
 

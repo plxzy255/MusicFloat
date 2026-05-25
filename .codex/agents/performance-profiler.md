@@ -163,6 +163,11 @@ Memory:
 - memory after launch, after overlay show, after overlay hide, after settings,
   and after repeated track changes,
 - difference between RSS, physical footprint, virtual memory, and trace size.
+- whether the measured process is a stripped self-release, Xcode Debug app,
+  Instruments target, installed `/Applications` bundle, or stale DerivedData
+  process. Use `script/release_self.sh --memory --demo --memory-duration 30`
+  or `script/release_self.sh --memory --live --drive-music --memory-duration 30`
+  when the user is asking about the real release app's memory.
 
 SwiftUI:
 

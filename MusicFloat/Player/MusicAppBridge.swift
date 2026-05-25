@@ -1,6 +1,66 @@
 import Foundation
 import OSLog
 
+enum MusicPlaybackCommand: Equatable, Sendable {
+    case playPause
+    case previousTrack
+    case nextTrack
+    case setVolume(Int)
+    case seek(TimeInterval)
+
+    nonisolated var clamped: MusicPlaybackCommand {
+        switch self {
+        case .playPause, .previousTrack, .nextTrack:
+            self
+        case .setVolume(let volume):
+            .setVolume(Self.clampedVolume(volume))
+        case .seek(let position):
+            .seek(Self.clampedPlaybackPosition(position, duration: nil))
+        }
+    }
+
+    nonisolated var telemetryName: String {
+        switch self {
+        case .playPause:
+            "playPause"
+        case .previousTrack:
+            "previousTrack"
+        case .nextTrack:
+            "nextTrack"
+        case .setVolume:
+            "setVolume"
+        case .seek:
+            "seek"
+        }
+    }
+
+    nonisolated static func clampedVolume(_ volume: Int) -> Int {
+        min(100, max(0, volume))
+    }
+
+    nonisolated static func clampedPlaybackPosition(
+        _ position: TimeInterval,
+        duration: TimeInterval?
+    ) -> TimeInterval {
+        let lowerBounded = max(0, position)
+        guard let duration, duration.isFinite, duration > 0 else {
+            return lowerBounded
+        }
+        return min(duration, lowerBounded)
+    }
+}
+
+enum MusicPlaybackCommandResult: Equatable, Sendable {
+    case succeeded
+    case unavailable(String)
+    case failed(String)
+
+    var isSuccess: Bool {
+        if case .succeeded = self { return true }
+        return false
+    }
+}
+
 @MainActor
 protocol MusicAppBridge {
     var displayName: String { get }
@@ -14,6 +74,13 @@ protocol MusicAppBridge {
     /// returns an immediately-finished stream so mock/disabled bridges do not
     /// have to opt in.
     func events() -> AsyncStream<PlayerState>
+
+    /// Performs a user-requested playback command. Mock/disabled bridges keep
+    /// the default unavailable result so test/demo paths never command Music.app.
+    func perform(_ command: MusicPlaybackCommand) async -> MusicPlaybackCommandResult
+
+    /// Reads the underlying player's output volume, if available.
+    func currentVolume() async -> Int?
 }
 
 extension MusicAppBridge {
@@ -21,6 +88,14 @@ extension MusicAppBridge {
         AsyncStream { continuation in
             continuation.finish()
         }
+    }
+
+    func perform(_ command: MusicPlaybackCommand) async -> MusicPlaybackCommandResult {
+        .unavailable("\(displayName) does not support playback commands")
+    }
+
+    func currentVolume() async -> Int? {
+        nil
     }
 }
 
@@ -71,6 +146,40 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
             return .disconnected
         }
         return await Self.pullSnapshot() ?? .disconnected
+    }
+
+    func perform(_ command: MusicPlaybackCommand) async -> MusicPlaybackCommandResult {
+        guard AppleMusicEventListener.isMusicAppRunning else {
+            return .unavailable("Music.app is not running")
+        }
+
+        let normalizedCommand = command.clamped
+        guard let raw = await AppleScriptRunner.runStringOffMain(Self.commandScript(for: normalizedCommand)),
+              !raw.isEmpty else {
+            return .failed("Music.app command returned no result")
+        }
+
+        if raw.hasPrefix("__ERR__||") {
+            let message = raw.components(separatedBy: "||").dropFirst().first ?? "unknown"
+            AppTelemetry.performance.error(
+                "Music playback command failed command=\(normalizedCommand.telemetryName, privacy: .public) error=\(message, privacy: .public)"
+            )
+            return .failed(message)
+        }
+
+        return .succeeded
+    }
+
+    func currentVolume() async -> Int? {
+        guard AppleMusicEventListener.isMusicAppRunning else {
+            return nil
+        }
+        guard let raw = await AppleScriptRunner.runStringOffMain(Self.volumeScript),
+              !raw.isEmpty,
+              !raw.hasPrefix("__ERR__||") else {
+            return nil
+        }
+        return Self.parseVolume(raw)
     }
 
     func events() -> AsyncStream<PlayerState> {
@@ -247,6 +356,57 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
     end try
     """
 
+    private static let volumeScript = """
+    try
+        tell application id "com.apple.Music"
+            return (sound volume as string)
+        end tell
+    on error errMsg
+        return "__ERR__||" & errMsg
+    end try
+    """
+
+    private static func commandScript(for command: MusicPlaybackCommand) -> String {
+        let body: String
+        switch command.clamped {
+        case .playPause:
+            body = """
+            playpause
+            return "ok"
+            """
+        case .previousTrack:
+            body = """
+            previous track
+            return "ok"
+            """
+        case .nextTrack:
+            body = """
+            next track
+            return "ok"
+            """
+        case .setVolume(let volume):
+            body = """
+            set sound volume to \(volume)
+            return (sound volume as string)
+            """
+        case .seek(let position):
+            body = """
+            set player position to \(Self.appleScriptNumberLiteral(for: position))
+            return (player position as string)
+            """
+        }
+
+        return """
+        try
+            tell application id "com.apple.Music"
+        \(body.indentedForAppleScriptBody)
+            end tell
+        on error errMsg
+            return "__ERR__||" & errMsg
+        end try
+        """
+    }
+
     /// Parses an AppleScript-emitted number string. Tolerates both POSIX
     /// (`42.587`) and locale forms with a decimal comma (`42,587`).
     /// Returns 0 when the input is empty or unparseable.
@@ -256,6 +416,21 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
         if let v = Double(trimmed) { return v }
         let normalized = trimmed.replacingOccurrences(of: ",", with: ".")
         return Double(normalized) ?? 0
+    }
+
+    nonisolated static func parseVolume(_ raw: String) -> Int? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let parsed = parseLocaleNumber(trimmed)
+        guard parsed.isFinite else { return nil }
+        return MusicPlaybackCommand.clampedVolume(Int(parsed.rounded()))
+    }
+
+    nonisolated static func appleScriptNumberLiteral(for value: TimeInterval) -> String {
+        let milliseconds = max(0, Int((value * 1_000).rounded()))
+        let whole = milliseconds / 1_000
+        let fraction = String(milliseconds % 1_000 + 1_000).dropFirst()
+        return "\(whole).\(fraction)"
     }
 
     private static func pullSnapshot() async -> PlayerState? {
@@ -328,5 +503,13 @@ struct DisabledMusicAppBridge: MusicAppBridge {
 
     func currentState() async -> PlayerState {
         .disconnected
+    }
+}
+
+private extension String {
+    var indentedForAppleScriptBody: String {
+        split(separator: "\n", omittingEmptySubsequences: false)
+            .map { "        " + $0 }
+            .joined(separator: "\n")
     }
 }
