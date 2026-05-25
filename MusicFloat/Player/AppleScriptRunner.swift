@@ -42,7 +42,9 @@ enum AppleScriptRunner {
 private actor AppleScriptExecutor {
     static let shared = AppleScriptExecutor()
 
+    private let maxCachedScripts = 24
     private var scripts: [String: OSAScript] = [:]
+    private var scriptAccessOrder: [String] = []
     private let language = OSALanguage(forName: "AppleScript")
 
     func runString(_ source: String) -> String? {
@@ -70,6 +72,7 @@ private actor AppleScriptExecutor {
 
     private func compiledScript(for source: String) -> OSAScript? {
         if let script = scripts[source] {
+            recordScriptAccess(source)
             return script
         }
 
@@ -83,7 +86,22 @@ private actor AppleScriptExecutor {
         }
 
         scripts[source] = script
+        scriptAccessOrder.append(source)
+        evictOldScriptsIfNeeded()
         return script
+    }
+
+    private func recordScriptAccess(_ source: String) {
+        scriptAccessOrder.removeAll { $0 == source }
+        scriptAccessOrder.append(source)
+    }
+
+    private func evictOldScriptsIfNeeded() {
+        while scripts.count > maxCachedScripts,
+              let evictedSource = scriptAccessOrder.first {
+            scriptAccessOrder.removeFirst()
+            scripts.removeValue(forKey: evictedSource)
+        }
     }
 
     private func logScriptError(_ errorInfo: NSDictionary) {

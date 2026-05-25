@@ -539,6 +539,7 @@ private struct TimedLyricTextView: View {
     let role: LyricsOverlayLineRole
     let effectiveLyricTime: TimeInterval
     @State private var animatedProgress: Double?
+    @State private var lastObservedProgress: Double?
 
     var body: some View {
         Group {
@@ -551,10 +552,13 @@ private struct TimedLyricTextView: View {
         }
         .animation(syllableProgressAnimation, value: progress ?? -1)
         .onAppear {
-            startProgressAnimation()
+            startProgressAnimation(resetObservedProgress: true)
         }
         .onChange(of: progressAnimationIdentity) {
-            startProgressAnimation()
+            startProgressAnimation(resetObservedProgress: true)
+        }
+        .onChange(of: progress ?? -1) {
+            restartProgressAnimationAfterSeekIfNeeded()
         }
     }
 
@@ -610,14 +614,19 @@ private struct TimedLyricTextView: View {
     }
 
     private var progressAnimationIdentity: String {
-        "\(line.id)-\(role)-\(line.startTime ?? -1)-\(line.endTime ?? -1)-\(usesSyllableTiming)"
+        "\(line.id)-\(role)-\(line.startTime ?? -1)-\(line.endTime ?? -1)-\(line.text)-\(line.syllables.count)-\(usesSyllableTiming)"
     }
 
-    private func startProgressAnimation() {
+    private func startProgressAnimation(resetObservedProgress: Bool = false) {
         guard role == .active,
               let progress else {
             animatedProgress = nil
+            lastObservedProgress = nil
             return
+        }
+
+        if resetObservedProgress {
+            lastObservedProgress = progress
         }
 
         guard !usesSyllableTiming else {
@@ -636,6 +645,30 @@ private struct TimedLyricTextView: View {
         withAnimation(.linear(duration: remainingDuration)) {
             animatedProgress = 1
         }
+    }
+
+    private func restartProgressAnimationAfterSeekIfNeeded() {
+        guard !usesSyllableTiming,
+              role == .active,
+              let progress else {
+            lastObservedProgress = progress
+            return
+        }
+
+        defer {
+            lastObservedProgress = progress
+        }
+
+        guard let lastObservedProgress else {
+            return
+        }
+
+        let progressDelta = progress - lastObservedProgress
+        guard progressDelta < -0.04 || progressDelta > 0.18 else {
+            return
+        }
+
+        startProgressAnimation()
     }
 
     private var progressEndTime: TimeInterval? {

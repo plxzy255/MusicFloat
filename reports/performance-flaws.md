@@ -35,7 +35,7 @@ Keep raw traces out of git; cite run IDs from `reports/performance-runs.jsonl`.
 
 ### PERF-006: Live AppleScript polling repeatedly recompiles scripts
 
-- Status: resolved in next PR
+- Status: resolved in PR #17
 - First seen: live same-track profiling for timed lyric progress
 - Signal: live Apple Music overlay samples on a syllable-timed track stayed near
   double-digit CPU while lyrics were already loaded.
@@ -61,7 +61,7 @@ Keep raw traces out of git; cite run IDs from `reports/performance-runs.jsonl`.
 
 ### PERF-005: AX lyrics fallback over-polls on visible-line misses
 
-- Status: resolved in next PR
+- Status: resolved in PR #17
 - First seen: live driven profiling for timed lyric refactor
 - Signal: when Apple Music web and LRCLIB missed, AX fallback notifications
   repeatedly traversed Music.app's lyrics tree while the panel had no visible

@@ -258,9 +258,20 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
         in syllables: [LyricSyllable],
         at effectiveLyricTime: TimeInterval
     ) -> Double? {
-        guard let firstStart = syllables.map(\.startTime).min(),
-              let lastEnd = syllables.map(\.endTime).max(),
-              lastEnd > firstStart else {
+        var firstStart: TimeInterval?
+        var lastEnd: TimeInterval?
+        var totalWeight = 0.0
+
+        for syllable in syllables {
+            firstStart = min(firstStart ?? syllable.startTime, syllable.startTime)
+            lastEnd = max(lastEnd ?? syllable.endTime, syllable.endTime)
+            totalWeight += Double(max(1, syllable.text.count))
+        }
+
+        guard let firstStart,
+              let lastEnd,
+              lastEnd > firstStart,
+              totalWeight > 0 else {
             return nil
         }
 
@@ -271,16 +282,9 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
             return 1
         }
 
-        let weightedSyllables = syllables.map { syllable in
-            (syllable, Double(max(1, syllable.text.count)))
-        }
-        let totalWeight = weightedSyllables.reduce(0) { $0 + $1.1 }
-        guard totalWeight > 0 else {
-            return nil
-        }
-
         var completedWeight = 0.0
-        for (syllable, weight) in weightedSyllables {
+        for syllable in syllables {
+            let weight = Double(max(1, syllable.text.count))
             if effectiveLyricTime >= syllable.endTime {
                 completedWeight += weight
                 continue
