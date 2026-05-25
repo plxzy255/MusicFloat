@@ -28,6 +28,7 @@ private final class MusicFloatAppController {
     private let mockProviderPipelineController: ProviderPipelineController
     private let artworkProvider: AppleMusicArtworkProvider
     private let statusItemController: MenuBarStatusItemController
+    private let settingsWindowController: SettingsWindowController
 
     init() {
         appState = AppState()
@@ -42,6 +43,7 @@ private final class MusicFloatAppController {
         )
         artworkProvider = AppleMusicArtworkProvider()
         statusItemController = MenuBarStatusItemController()
+        settingsWindowController = SettingsWindowController()
 
         statusItemController.install(
             appState: appState,
@@ -54,7 +56,7 @@ private final class MusicFloatAppController {
                 clearAllPerTrackOffsets: { [weak self] in self?.clearAllPerTrackOffsets() },
                 resetMockPlayback: { [weak self] in self?.resetMockPlayback() },
                 setOverlayContentState: { [weak self] state in self?.setOverlayContentState(state) },
-                openSettings: Self.openSettingsWindow,
+                openSettings: { [weak self] in self?.openSettingsWindow() },
                 quit: { [weak self] in self?.quit() }
             )
         )
@@ -76,9 +78,12 @@ private final class MusicFloatAppController {
         }
     }
 
-    private static func openSettingsWindow() {
-        AppTelemetry.menuBar.info("Open settings requested")
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    private func openSettingsWindow() {
+        settingsWindowController.show(
+            appState: appState,
+            onTranslationPreferencesChanged: { [weak self] in self?.translationPreferencesChanged() },
+            onTranslationPreparationCompleted: { [weak self] in self?.retryTranslationAfterPreparation() }
+        )
     }
 
     private func nudgeLyricOffset(by delta: Double) {
