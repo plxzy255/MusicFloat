@@ -49,6 +49,7 @@ struct LyricsOverlayView: View {
     var onTranslationPreparationCompleted: () -> Void = {}
     var onPresentationLayoutChanged: () -> Void = {}
     var playbackCommands: LyricsOverlayPlaybackCommands = .disabled
+    @State private var accessibilityDisplayOptions = OverlayAccessibilityDisplayOptions.current
     @State private var showsVolumeSlider = false
     @State private var draftVolume = 50.0
     @State private var isScrubbingPlayback = false
@@ -85,10 +86,10 @@ struct LyricsOverlayView: View {
             .padding(.horizontal, 24)
             .padding(.vertical, 18)
             .frame(width: CGFloat(snapshot.widthPreset.width), height: panelHeight, alignment: .leading)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: LyricsOverlayLayout.cornerRadius, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: LyricsOverlayLayout.cornerRadius, style: .continuous)
-                    .stroke(.separator.opacity(0.35), lineWidth: 1)
+            .background {
+                LyricsOverlayBackgroundSurface(
+                    displayOptions: accessibilityDisplayOptions
+                )
             }
         }
         .frame(width: CGFloat(snapshot.widthPreset.width), height: panelHeight)
@@ -111,6 +112,9 @@ struct LyricsOverlayView: View {
         }
         .onChange(of: panelHeight) {
             onPresentationLayoutChanged()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)) { _ in
+            accessibilityDisplayOptions = .current
         }
     }
 
@@ -502,6 +506,51 @@ struct LyricsOverlayView: View {
     }
     #endif
 
+}
+
+private struct OverlayAccessibilityDisplayOptions: Equatable {
+    let reduceTransparency: Bool
+    let increaseContrast: Bool
+
+    static var current: OverlayAccessibilityDisplayOptions {
+        OverlayAccessibilityDisplayOptions(
+            reduceTransparency: NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency,
+            increaseContrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+        )
+    }
+}
+
+private struct LyricsOverlayBackgroundSurface: View {
+    let displayOptions: OverlayAccessibilityDisplayOptions
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: LyricsOverlayLayout.cornerRadius, style: .continuous)
+    }
+
+    var body: some View {
+        ZStack {
+            if displayOptions.reduceTransparency {
+                shape.fill(reducedTransparencyFill)
+            } else {
+                shape.fill(.regularMaterial)
+            }
+
+            shape.strokeBorder(.separator.opacity(strokeOpacity), lineWidth: strokeWidth)
+        }
+        .accessibilityHidden(true)
+    }
+
+    private var reducedTransparencyFill: Color {
+        Color(nsColor: displayOptions.increaseContrast ? .windowBackgroundColor : .controlBackgroundColor)
+    }
+
+    private var strokeOpacity: Double {
+        displayOptions.increaseContrast ? 0.75 : 0.35
+    }
+
+    private var strokeWidth: CGFloat {
+        displayOptions.increaseContrast ? 1.5 : 1
+    }
 }
 
 private struct MusicPlaybackProgressSlider: View {
