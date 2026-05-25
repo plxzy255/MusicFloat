@@ -119,6 +119,41 @@ The most useful Instruments templates for this project are:
 - `Power Profiler`: long-running menu bar idle cost.
 - `Animation Hitches`: overlay movement/material/rendering smoothness.
 
+## Performance Profiler Agent
+
+For tasks that ask Codex to compare versions, benchmark, profile, investigate
+memory leaks, SwiftUI invalidation, Swift concurrency, CPU wakeups, startup
+cost, regressions, or performance flaws, start with:
+
+```sh
+sed -n '1,260p' .codex/PROFILING.md
+sed -n '1,320p' .codex/agents/performance-profiler.md
+./script/profile.sh report
+./script/profile.sh disk
+```
+
+Use the profiler agent spec at `.codex/agents/performance-profiler.md` as the
+task contract. It defines valid evidence, same-mode comparison rules,
+baseline/candidate workflow, report format, and fix boundaries.
+
+When comparing versions, do not claim a regression from mixed modes or
+unverified live traces. Use run IDs from `reports/performance-runs.jsonl`,
+trace paths under `.codex/traces/`, usage CSVs under `.codex/traces/usage/`,
+and `cv.MusicFloat` logs as evidence. Update
+`reports/performance-flaws.md` when a run proves a new flaw, invalidates prior
+evidence, or closes an issue.
+
+For Apple Music live-button, live-lyrics, freeze, seek, or skip investigations,
+prefer the driven live workflow:
+
+```sh
+./script/profile.sh sample 30s --live --drive-music --scenario apple-music-driven-karaoke
+```
+
+`--drive-music` is allowed for those profiling tasks because it starts
+Music.app playback and performs seek/next-track actions, but call out that it
+changes the user's active Music playback.
+
 ## Build And Runtime Baseline
 
 - Project type: Xcode macOS app.

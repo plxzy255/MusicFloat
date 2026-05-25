@@ -3,6 +3,16 @@
 This guide documents how to collect reproducible traces without accidentally
 comparing unlike runtime modes.
 
+For Codex tasks that are specifically about benchmarking, profiling,
+version-to-version comparison, memory leaks, SwiftUI invalidation, Swift
+concurrency, CPU wakeups, or performance flaw hunting, also read:
+
+```sh
+.codex/agents/performance-profiler.md
+```
+
+That file is the agent contract. This file is the command guide.
+
 ## What Counts As Evidence
 
 Use the same mode on both branches when comparing performance:
@@ -15,8 +25,11 @@ Use the same mode on both branches when comparing performance:
 ## Live Profiling Requirements
 
 `./script/profile.sh ... --live` now refuses to proceed unless Music.app is
-already running and actively playing a real track. During each trace it captures
-MusicFloat unified logs and verifies:
+already running and actively playing a real track. Add `--drive-music` when the
+task is about the live button, live lyrics, seek/skip handling, playback
+freezes, or track-change behavior; it starts Music.app playback if needed and
+performs a seek plus next-track action during the trace. During each trace it
+captures MusicFloat unified logs and verifies:
 
 - `--live` launch was requested.
 - Live Apple Music bridge started.
@@ -25,6 +38,7 @@ MusicFloat unified logs and verifies:
 - The overlay view appeared.
 - A non-mock lyrics document was applied.
 - The provider pipeline reached ready state.
+- For `--drive-music` runs, a seek or track-change event was observed.
 - Trace disk usage was reported.
 - A per-run CPU/RSS usage CSV was captured.
 
@@ -37,12 +51,14 @@ Preflight current Music.app playback:
 
 ```sh
 ./script/profile.sh preflight-live
+./script/profile.sh preflight-live --drive-music
 ```
 
 Record one live trace:
 
 ```sh
 ./script/profile.sh record "Time Profiler" 25s --live
+./script/profile.sh record "Time Profiler" 30s --live --drive-music --scenario apple-music-driven-karaoke
 ```
 
 Record the full live suite:
@@ -62,6 +78,7 @@ Collect direct CPU/RSS samples without Instruments:
 ```sh
 ./script/profile.sh sample 30s --demo
 ./script/profile.sh sample 30s --live
+./script/profile.sh sample 30s --live --drive-music --scenario apple-music-driven-karaoke
 ```
 
 List recent run ledger entries:
@@ -94,9 +111,11 @@ For a live karaoke comparison:
 
 1. Open Music.app.
 2. Start a lyric-capable Apple Music track.
-3. Run the same `script/profile.sh ... --live` command on `main`.
-4. Run the same command on the PR branch.
-5. Compare traces only if both runs passed live verification.
+3. Use `--drive-music` unless the comparison intentionally needs passive
+   playback; this exercises the "Listen to Apple Music" path plus seek/skip.
+4. Run the same `script/profile.sh ... --live` command on `main`.
+5. Run the same command on the PR branch.
+6. Compare traces only if both runs passed live verification.
 
 Live verification logs are written under:
 
