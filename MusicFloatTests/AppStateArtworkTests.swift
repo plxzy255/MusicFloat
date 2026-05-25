@@ -5,6 +5,99 @@ import XCTest
 
 final class AppStateArtworkTests: XCTestCase {
     @MainActor
+    func testLyricsAndTranslationClearWhenTrackChanges() {
+        let defaults = UserDefaults(suiteName: "MusicFloatTests.lyricsClearOnTrackChange.\(UUID().uuidString)")!
+        let appState = AppState(userDefaults: defaults)
+        let firstTrack = NowPlayingTrack(
+            id: "track-a",
+            title: "First",
+            artist: "Artist",
+            album: "Album",
+            duration: 180,
+            providerName: "Test"
+        )
+        let secondTrack = NowPlayingTrack(
+            id: "track-b",
+            title: "Second",
+            artist: "Artist",
+            album: "Album",
+            duration: 180,
+            providerName: "Test"
+        )
+        let oldDocument = LyricsDocument(
+            source: .appleMusicWeb,
+            lines: [LyricLine(id: 0, text: "Old lyric should not leak", startTime: 10)],
+            isTimed: true,
+            sourceLanguageIdentifier: "en"
+        )
+
+        appState.updatePlayerState(PlayerState(
+            playbackStatus: .playing,
+            track: firstTrack,
+            elapsedTime: 12,
+            updatedAt: Date()
+        ))
+        appState.applyLyricsDocument(oldDocument)
+        appState.applyTranslation(LyricTranslation(
+            targetLanguageIdentifier: "fr",
+            sourceLanguageIdentifier: "en",
+            lines: [TranslatedLyricLine(id: 0, sourceLineID: 0, text: "Ancienne ligne")]
+        ))
+        appState.applyProviderReady()
+
+        appState.updatePlayerState(PlayerState(
+            playbackStatus: .playing,
+            track: secondTrack,
+            elapsedTime: 0,
+            updatedAt: Date()
+        ))
+
+        XCTAssertEqual(appState.lyricsDocument.source, .none)
+        XCTAssertTrue(appState.lyricsDocument.lines.isEmpty)
+        XCTAssertTrue(appState.translation.lines.isEmpty)
+        XCTAssertFalse(appState.overlaySnapshot.lyricText.contains("Old lyric should not leak"))
+    }
+
+    @MainActor
+    func testLyricsArePreservedForTransientNilTrackPayload() {
+        let defaults = UserDefaults(suiteName: "MusicFloatTests.lyricsPreserveNilTrack.\(UUID().uuidString)")!
+        let appState = AppState(userDefaults: defaults)
+        let track = NowPlayingTrack(
+            id: "track-a",
+            title: "First",
+            artist: "Artist",
+            album: "Album",
+            duration: 180,
+            providerName: "Test"
+        )
+        let document = LyricsDocument(
+            source: .musicAppUI,
+            lines: [LyricLine(id: 0, text: "Keep this transiently", startTime: nil)],
+            isTimed: false,
+            sourceLanguageIdentifier: "en"
+        )
+
+        appState.updatePlayerState(PlayerState(
+            playbackStatus: .playing,
+            track: track,
+            elapsedTime: 12,
+            updatedAt: Date()
+        ))
+        appState.applyLyricsDocument(document)
+        appState.applyProviderReady()
+
+        appState.updatePlayerState(PlayerState(
+            playbackStatus: .paused,
+            track: nil,
+            elapsedTime: 12,
+            updatedAt: Date()
+        ))
+
+        XCTAssertEqual(appState.lyricsDocument, document)
+        XCTAssertEqual(appState.overlaySnapshot.lyricText, "Keep this transiently")
+    }
+
+    @MainActor
     func testNowPlayingArtworkClearsWhenTrackChanges() {
         let defaults = UserDefaults(suiteName: "MusicFloatTests.artworkClears.\(UUID().uuidString)")!
         let appState = AppState(userDefaults: defaults)

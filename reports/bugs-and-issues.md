@@ -43,6 +43,27 @@ the status as fixes land or evidence changes.
 
 ## Resolved
 
+### 2026-05-25 stale lyrics shown after no-lyrics track change
+
+- Status: resolved
+- Area: live track-change state / provider timeout and miss handling.
+- Symptom: after a track change, a song with no lyrics could briefly or
+  intermittently show lyrics from the previous song, especially when provider
+  lookup work produced network timeout lines such as
+  `nw_read_request_report ... Operation timed out`.
+- Root cause: confirmed non-empty track changes cleared artwork but left the
+  previous `lyricsDocument` and translation in `AppState` until provider lookup
+  finished. Provider guards prevented stale async results from applying, but the
+  old document still existed locally while the new track was loading or when the
+  new lookup ended unavailable.
+- Fix: `AppState.updatePlayerState(_:)` now clears lyrics and translation
+  immediately when the incoming player snapshot has a real new track identity.
+  Transient nil-track Music.app payloads still preserve the current lyrics.
+- Verification:
+  - Focused `AppStateArtworkTests` and `ProviderPipelineControllerTests`
+    passed, including new coverage for real track changes clearing lyrics and
+    transient nil-track payloads preserving them.
+
 ### 2026-05-25 AppleScript compile crash on scrub
 
 - Status: resolved

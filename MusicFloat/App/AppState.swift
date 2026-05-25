@@ -557,6 +557,9 @@ final class AppState {
         if playerState.track?.id != previousTrackID {
             nowPlayingArtwork = nil
             nowPlayingArtworkTrackID = playerState.track?.id
+            if playerState.track != nil {
+                clearLyricsForTrackChange()
+            }
         }
         // Seed the live tick fields from the authoritative state so
         // the overlay's elapsed reflects it immediately.
@@ -582,6 +585,12 @@ final class AppState {
     func clearNowPlayingArtwork() {
         nowPlayingArtwork = nil
         nowPlayingArtworkTrackID = nil
+    }
+
+    private func clearLyricsForTrackChange() {
+        lyricsDocument = LyricsDocument(source: .none, lines: [], isTimed: false)
+        clearTranslation()
+        AppTelemetry.performance.info("Lyrics document cleared for new track")
     }
 
     func setMusicVolume(_ volume: Int?) {
