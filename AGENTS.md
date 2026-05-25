@@ -2,6 +2,18 @@
 
 MusicFloat is a native macOS menu bar app for floating, translated music lyrics. The project is intentionally starting small: keep the first slices architectural, observable, and easy to reverse while leaving room for deeper Apple Music and Music.app experiments later.
 
+## Agent Workflow Checklist
+
+- One lead agent owns the final answer, working tree, and verdict.
+- Keep simple or single-file changes lead-only.
+- Delegate only when the user asked for subagents, delegation, or parallel
+  agent work.
+- Delegate only bounded sidecar investigations or disjoint write scopes.
+- Do not overlap build, test, profile, release, or app-launch commands against
+  the same checkout, DerivedData, trace dirs, performance ledger, or running app.
+- Performance and regression claims require evidence: run IDs, traces, logs,
+  and same-mode comparisons.
+
 ## Product Direction
 
 - Build a no-Dock menu bar app with a lightweight floating lyrics overlay.
