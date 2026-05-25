@@ -33,6 +33,32 @@ Keep raw traces out of git; cite run IDs from `reports/performance-runs.jsonl`.
 
 ## Resolved
 
+### PERF-006: Live AppleScript polling repeatedly recompiles scripts
+
+- Status: resolved in next PR
+- First seen: live same-track profiling for timed lyric progress
+- Signal: live Apple Music overlay samples on a syllable-timed track stayed near
+  double-digit CPU while lyrics were already loaded.
+- Affected modes: live Apple Music overlay, especially timed lyrics
+- Evidence: `20260525-051919Z-live-Direct-Sample-1d5470b` on
+  "Solitaires (feat. Travis Scott)" selected Apple Music web syllable lyrics
+  with `line_count=63` and `syllable_count=702`, then reported avg CPU 12.64%
+  and max CPU 17.6%.
+- Diagnosis: a local Time Profiler export from
+  `20260525-052039Z-live-Time-Profiler-1d5470b` helped identify repeated
+  `OSAScript` compile work under XProtect/YARA scanning. That record is marked
+  invalid in the ledger because `xctrace` exited non-zero at the time limit, so
+  same-mode sample runs are the comparison evidence.
+- Fix: async AppleScript execution now reuses compiled `OSAScript` instances
+  behind a serial actor, keeping OSAKit work off the main actor while avoiding
+  per-poll recompilation.
+- Validation: same-track live sample
+  `20260525-052748Z-live-Direct-Sample-1d5470b` selected the same 63-line,
+  702-syllable document and reported avg CPU 7.13% and max CPU 24.8%; excluding
+  the initial launch/provider samples, CPU was avg 6.68% and max 11.7%.
+  A driven live sample also dropped to avg CPU 4.19% and max CPU 12.8% in
+  `20260525-052533Z-live-Direct-Sample-1d5470b`.
+
 ### PERF-005: AX lyrics fallback over-polls on visible-line misses
 
 - Status: resolved in next PR
