@@ -387,6 +387,46 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
     }
 
     @MainActor
+    func testOverlayLayoutExpandsOnlyWhenLyricsAreActiveAndDisplayable() {
+        let snapshot = LyricsOverlaySnapshotBuilder().makeSnapshot(
+            contentState: .ready,
+            playerState: playerState(elapsedTime: 11),
+            lyricsDocument: timedDocument(),
+            translation: lineTranslations(),
+            showsTranslation: true,
+            widthPreset: .medium
+        )
+
+        XCTAssertTrue(snapshot.hasDisplayableLyrics)
+        XCTAssertEqual(
+            LyricsOverlayLayout.panelHeight(for: snapshot, isLyricsExpanded: true),
+            LyricsOverlayLayout.expandedPanelHeight
+        )
+        XCTAssertEqual(
+            LyricsOverlayLayout.panelHeight(for: snapshot, isLyricsExpanded: false),
+            LyricsOverlayLayout.collapsedPanelHeight
+        )
+    }
+
+    @MainActor
+    func testOverlayLayoutCollapsesWhenLyricsAreUnavailable() {
+        let snapshot = LyricsOverlaySnapshotBuilder().makeSnapshot(
+            contentState: .unavailable,
+            playerState: .disconnected,
+            lyricsDocument: MockLyricsProvider.previewDocument,
+            translation: MockTranslationProvider.previewTranslation(targetLanguageIdentifier: "fr"),
+            showsTranslation: true,
+            widthPreset: .medium
+        )
+
+        XCTAssertFalse(snapshot.hasDisplayableLyrics)
+        XCTAssertEqual(
+            LyricsOverlayLayout.panelHeight(for: snapshot, isLyricsExpanded: true),
+            LyricsOverlayLayout.collapsedPanelHeight
+        )
+    }
+
+    @MainActor
     func testUntimedDocumentRendersFirstPlainLineEarlyInTrack() {
         let document = LyricsDocument(
             source: .musicApp,

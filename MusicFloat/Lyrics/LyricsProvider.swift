@@ -142,6 +142,8 @@ final class PublicLyricsProvider: LyricsProvider {
     private let maxCacheEntries = 64
     private static let documentCacheTTL: TimeInterval = 6 * 60 * 60
     private static let unavailableCacheTTL: TimeInterval = 10 * 60
+    private static let visibleLyricsRetryAttempts = 2
+    private static let visibleLyricsRetryDelayNanoseconds: UInt64 = 500_000_000
     private let appleMusicWeb = AppleMusicWebLyricsProvider()
     private let dependencies: Dependencies
 
@@ -287,8 +289,8 @@ final class PublicLyricsProvider: LyricsProvider {
                 return .available(axDoc)
             }
             if dependencies.shouldRetryVisibleLyrics() {
-                for _ in 1...6 {
-                    try? await dependencies.sleep(500_000_000)
+                for _ in 1...Self.visibleLyricsRetryAttempts {
+                    try? await dependencies.sleep(Self.visibleLyricsRetryDelayNanoseconds)
                     guard !Task.isCancelled else {
                         return .unavailable()
                     }

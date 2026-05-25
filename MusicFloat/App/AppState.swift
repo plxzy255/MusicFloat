@@ -382,6 +382,7 @@ final class AppState {
     var translation: LyricTranslation
     var runtimeFeatureFlags = RuntimeFeatureFlags.architectureDefault
     var showsTranslation: Bool
+    var isLyricsOverlayExpanded: Bool
     var preferredTranslationLanguageIdentifier: String
     var overlayWidthPreset: OverlayWidthPreset
     var reduceHiddenMemoryUsage: Bool
@@ -415,6 +416,7 @@ final class AppState {
         userDefaults.set(languageIdentifier, forKey: Self.preferredTranslationLanguageIdentifierKey)
         translation = MockTranslationProvider.previewTranslation(targetLanguageIdentifier: languageIdentifier)
         showsTranslation = userDefaults.object(forKey: "showTranslation") as? Bool ?? true
+        isLyricsOverlayExpanded = userDefaults.object(forKey: "lyricsOverlayExpanded") as? Bool ?? true
         overlayWidthPreset = OverlayWidthPreset(
             rawValue: userDefaults.string(forKey: "overlayWidthPreset") ?? OverlayWidthPreset.medium.rawValue
         ) ?? .medium
@@ -609,6 +611,12 @@ final class AppState {
 
     func setPlaybackCommandInFlight(_ isInFlight: Bool) {
         isPlaybackCommandInFlight = isInFlight
+    }
+
+    func setLyricsOverlayExpanded(_ isExpanded: Bool) {
+        isLyricsOverlayExpanded = isExpanded
+        userDefaults.set(isExpanded, forKey: "lyricsOverlayExpanded")
+        AppTelemetry.windowing.info("Lyrics overlay expanded=\(isExpanded)")
     }
 
     /// High-frequency update — does NOT touch `playerState`, so menu/Settings

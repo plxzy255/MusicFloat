@@ -164,6 +164,39 @@ final class PublicLyricsProviderTests: XCTestCase {
         ])
     }
 
+    func testVisibleLyricsRetryIsBoundedAfterAXMiss() async {
+        let calls = CallLog()
+        let provider = PublicLyricsProvider(dependencies: dependencies(
+            calls: calls,
+            appleScript: nil,
+            requiresAccessibilityPermission: false,
+            mediaUserTokenConfigured: true,
+            appleMusicWeb: nil,
+            lrclib: nil,
+            hasAccessibilityPermission: true,
+            ax: nil,
+            retryVisibleLyrics: true
+        ))
+
+        let result = await provider.lyrics(for: track(id: "track-retry"))
+
+        XCTAssertEqual(result, .unavailable)
+        XCTAssertEqual(calls.values, [
+            "appleScript",
+            "requiresAX",
+            "mediaToken",
+            "appleMusicWeb",
+            "lrclib",
+            "hasAX",
+            "ax",
+            "retryAX",
+            "sleep",
+            "ax",
+            "sleep",
+            "ax"
+        ])
+    }
+
     func testProviderFailureUnavailableIsNotNegativeCached() async {
         let calls = CallLog()
         let provider = PublicLyricsProvider(dependencies: dependencies(
@@ -307,6 +340,7 @@ final class PublicLyricsProviderTests: XCTestCase {
         fetchLRCLIBLyrics: (@MainActor (NowPlayingTrack, String) async throws -> LyricsDocument?)? = nil,
         hasAccessibilityPermission: Bool,
         ax: LyricsDocument?,
+        retryVisibleLyrics: Bool = false,
         now: @escaping @MainActor () -> Date = { Date() }
     ) -> PublicLyricsProvider.Dependencies {
         PublicLyricsProvider.Dependencies(
@@ -327,7 +361,7 @@ final class PublicLyricsProviderTests: XCTestCase {
             },
             shouldRetryVisibleLyrics: {
                 calls.append("retryAX")
-                return false
+                return retryVisibleLyrics
             },
             isMediaUserTokenConfigured: {
                 calls.append("mediaToken")

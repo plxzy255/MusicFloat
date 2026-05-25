@@ -6,8 +6,25 @@ import SwiftUI
 #endif
 
 enum LyricsOverlayLayout {
-    static let panelHeight: CGFloat = 248
+    static let expandedPanelHeight: CGFloat = 248
+    static let collapsedPanelHeight: CGFloat = 148
     static let albumCoverSize: CGFloat = 96
+    static let cornerRadius: CGFloat = 18
+
+    static func panelHeight(for snapshot: LyricsOverlaySnapshot, isLyricsExpanded: Bool) -> CGFloat {
+        displaysLyrics(for: snapshot, isLyricsExpanded: isLyricsExpanded) ? expandedPanelHeight : collapsedPanelHeight
+    }
+
+    static func displaysLyrics(for snapshot: LyricsOverlaySnapshot, isLyricsExpanded: Bool) -> Bool {
+        isLyricsExpanded && snapshot.hasDisplayableLyrics
+    }
+}
+
+extension LyricsOverlaySnapshot {
+    var hasDisplayableLyrics: Bool {
+        guard contentState == .ready else { return false }
+        return activeLine != nil || !lyricWindow.isEmpty
+    }
 }
 
 @MainActor
@@ -30,6 +47,7 @@ struct LyricsOverlayPlaybackCommands {
 struct LyricsOverlayView: View {
     @Bindable var appState: AppState
     var onTranslationPreparationCompleted: () -> Void = {}
+    var onPresentationLayoutChanged: () -> Void = {}
     var playbackCommands: LyricsOverlayPlaybackCommands = .disabled
     @State private var showsVolumeSlider = false
     @State private var draftVolume = 50.0
@@ -57,19 +75,23 @@ struct LyricsOverlayView: View {
 
     private var content: some View {
         let snapshot = appState.overlaySnapshot
+        let panelHeight = LyricsOverlayLayout.panelHeight(
+            for: snapshot,
+            isLyricsExpanded: appState.isLyricsOverlayExpanded
+        )
 
         return ZStack {
             overlayContent(for: snapshot)
             .padding(.horizontal, 24)
             .padding(.vertical, 18)
-            .frame(width: CGFloat(snapshot.widthPreset.width), height: LyricsOverlayLayout.panelHeight, alignment: .leading)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .frame(width: CGFloat(snapshot.widthPreset.width), height: panelHeight, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: LyricsOverlayLayout.cornerRadius, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: LyricsOverlayLayout.cornerRadius, style: .continuous)
                     .stroke(.separator.opacity(0.35), lineWidth: 1)
             }
         }
-        .frame(width: CGFloat(snapshot.widthPreset.width), height: LyricsOverlayLayout.panelHeight)
+        .frame(width: CGFloat(snapshot.widthPreset.width), height: panelHeight)
         .contentShape(Rectangle())
         .onAppear {
             AppTelemetry.windowing.info("Lyrics overlay view appeared")
@@ -87,12 +109,20 @@ struct LyricsOverlayView: View {
         .onChange(of: appState.playerState.track?.id) {
             resetDraftPlaybackPosition()
         }
+        .onChange(of: panelHeight) {
+            onPresentationLayoutChanged()
+        }
     }
 
     @ViewBuilder
     private func overlayContent(for snapshot: LyricsOverlaySnapshot) -> some View {
+        let displaysLyrics = LyricsOverlayLayout.displaysLyrics(
+            for: snapshot,
+            isLyricsExpanded: appState.isLyricsOverlayExpanded
+        )
+
         if appState.isLiveModeRunning {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: displaysLyrics ? 12 : 0) {
                 HStack(alignment: .top, spacing: 14) {
                     albumCoverView(artwork: appState.nowPlayingArtwork)
 
@@ -104,16 +134,18 @@ struct LyricsOverlayView: View {
                             .minimumScaleFactor(0.82)
 
                         playbackSliderRow
-                        playbackControlsRow
+                        playbackControlsRow(for: snapshot)
                     }
                     .frame(height: LyricsOverlayLayout.albumCoverSize, alignment: .center)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(height: LyricsOverlayLayout.albumCoverSize, alignment: .top)
 
-                lyricBlock(for: snapshot)
+                if displaysLyrics {
+                    lyricBlock(for: snapshot)
+                }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: displaysLyrics ? .topLeading : .center)
         } else {
             HStack(alignment: .center, spacing: 14) {
                 if appState.nowPlayingArtwork != nil {
@@ -141,11 +173,83 @@ struct LyricsOverlayView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
 
-                    lyricBlock(for: snapshot)
+                    if displaysLyrics {
+                        lyricBlock(for: snapshot)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         }
+    }
+
+    private func playbackControlsRow(for snapshot: LyricsOverlaySnapshot) -> some View {
+        HStack(spacing: 7) {
+            playbackButton(
+                systemName: "backward.fill",
+                label: "Previous track",
+                help: "Previous track",
+                isEnabled: playbackControlsEnabled,
+                isActive: false,
+                action: playbackCommands.previousTrack
+            )
+
+            playbackButton(
+                systemName: appState.playerState.playbackStatus == .playing ? "pause.fill" : "play.fill",
+                label: appState.playerState.playbackStatus == .playing ? "Pause" : "Play",
+                help: appState.playerState.playbackStatus == .playing ? "Pause Apple Music" : "Play Apple Music",
+                isEnabled: playbackControlsEnabled,
+                isActive: false,
+                symbolSize: 15,
+                action: playbackCommands.playPause
+            )
+
+            playbackButton(
+                systemName: "forward.fill",
+                label: "Next track",
+                help: "Next track",
+                isEnabled: playbackControlsEnabled,
+                isActive: false,
+                action: playbackCommands.nextTrack
+            )
+
+            playbackButton(
+                systemName: appState.isLyricsOverlayExpanded ? "quote.bubble.fill" : "quote.bubble",
+                label: appState.isLyricsOverlayExpanded ? "Hide lyrics" : "Show lyrics",
+                help: appState.isLyricsOverlayExpanded ? "Hide lyrics" : "Show lyrics",
+                isEnabled: snapshot.hasDisplayableLyrics,
+                isActive: appState.isLyricsOverlayExpanded && snapshot.hasDisplayableLyrics,
+                symbolSize: 15,
+                action: toggleLyricsExpansion
+            )
+
+            playbackButton(
+                systemName: volumeSystemImageName,
+                label: "Volume",
+                help: showsVolumeSlider ? "Hide volume" : "Show volume",
+                isEnabled: playbackControlsEnabled,
+                isActive: showsVolumeSlider,
+                symbolSize: 15,
+                action: toggleVolumeSlider
+            )
+
+            if showsVolumeSlider {
+                Slider(
+                    value: $draftVolume,
+                    in: 0...100,
+                    onEditingChanged: { isEditing in
+                        if !isEditing {
+                            commitVolumeChange()
+                        }
+                    }
+                )
+                .frame(width: volumeSliderWidth)
+                .controlSize(.small)
+                .disabled(!playbackControlsEnabled)
+                .accessibilityLabel("Apple Music volume")
+            }
+        }
+        .frame(height: 30, alignment: .leading)
     }
 
     @ViewBuilder
@@ -180,102 +284,50 @@ struct LyricsOverlayView: View {
         .accessibilityLabel(artwork == nil ? "Album artwork unavailable" : "Album artwork")
     }
 
-    private var playbackControlsRow: some View {
-        HStack(spacing: 7) {
-            playbackButton(
-                systemName: "backward.fill",
-                label: "Previous track",
-                help: "Previous track",
-                action: playbackCommands.previousTrack
-            )
-
-            playbackButton(
-                systemName: appState.playerState.playbackStatus == .playing ? "pause.fill" : "play.fill",
-                label: appState.playerState.playbackStatus == .playing ? "Pause" : "Play",
-                help: appState.playerState.playbackStatus == .playing ? "Pause Apple Music" : "Play Apple Music",
-                action: playbackCommands.playPause
-            )
-
-            playbackButton(
-                systemName: "forward.fill",
-                label: "Next track",
-                help: "Next track",
-                action: playbackCommands.nextTrack
-            )
-
-            playbackButton(
-                systemName: volumeSystemImageName,
-                label: "Volume",
-                help: showsVolumeSlider ? "Hide volume" : "Show volume",
-                action: toggleVolumeSlider
-            )
-
-            if showsVolumeSlider {
-                Slider(
-                    value: $draftVolume,
-                    in: 0...100,
-                    onEditingChanged: { isEditing in
-                        if !isEditing {
-                            commitVolumeChange()
-                        }
-                    }
-                )
-                .frame(width: volumeSliderWidth)
-                .controlSize(.small)
-                .disabled(!playbackControlsEnabled)
-                .accessibilityLabel("Apple Music volume")
-
-                Text("\(MusicPlaybackCommand.clampedVolume(Int(draftVolume.rounded())))")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(width: 22, alignment: .trailing)
-            }
-        }
-        .frame(height: 26, alignment: .leading)
-    }
-
     private var playbackSliderRow: some View {
         let duration = playbackDuration
-        return HStack(spacing: 8) {
-            Text(formattedPlaybackTime(currentPlaybackPosition))
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 36, alignment: .leading)
-
-            Slider(
-                value: playbackPositionBinding(duration: duration),
-                in: 0...max(1, duration),
-                onEditingChanged: playbackScrubEditingChanged
-            )
-            .controlSize(.small)
-            .disabled(!playbackControlsEnabled || duration <= 0)
-            .accessibilityLabel("Playback position")
-
-            Text(formattedPlaybackTime(duration))
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .frame(width: 36, alignment: .trailing)
-        }
-        .frame(height: 20, alignment: .leading)
+        return MusicPlaybackProgressSlider(
+            value: playbackPositionBinding(duration: duration),
+            in: 0...max(1, duration),
+            isEnabled: playbackControlsEnabled && duration > 0,
+            onEditingChanged: playbackScrubEditingChanged
+        )
+        .accessibilityLabel("Playback position")
+        .frame(height: 18, alignment: .leading)
     }
 
     private func playbackButton(
         systemName: String,
         label: String,
         help: String,
+        isEnabled: Bool,
+        isActive: Bool,
+        symbolSize: CGFloat = 13,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
+        let activeColor = Color(red: 1.0, green: 0.17, blue: 0.34)
+        let foregroundColor: Color = isActive ? activeColor : (isEnabled ? .primary : .secondary)
+
+        return Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 12, weight: .semibold))
-                .frame(width: 26, height: 24)
+                .font(.system(size: symbolSize, weight: .semibold))
+                .frame(width: 30, height: 28)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(playbackControlsEnabled ? .primary : .secondary)
-        .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .opacity(playbackControlsEnabled ? 1 : 0.55)
-        .disabled(!playbackControlsEnabled)
+        .foregroundStyle(foregroundColor)
+        .background(
+            isActive ? activeColor.opacity(0.14) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .overlay {
+            if isActive {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(activeColor.opacity(0.62), lineWidth: 1)
+            }
+        }
+        .opacity(isEnabled ? 1 : 0.48)
+        .disabled(!isEnabled)
         .help(help)
         .accessibilityLabel(label)
     }
@@ -328,7 +380,12 @@ struct LyricsOverlayView: View {
     }
 
     private var volumeSliderWidth: CGFloat {
-        appState.overlayWidthPreset == .compact ? 84 : 116
+        appState.overlayWidthPreset == .compact ? 54 : 96
+    }
+
+    private func toggleLyricsExpansion() {
+        appState.setLyricsOverlayExpanded(!appState.isLyricsOverlayExpanded)
+        onPresentationLayoutChanged()
     }
 
     private func toggleVolumeSlider() {
@@ -355,15 +412,17 @@ struct LyricsOverlayView: View {
         isScrubbingPlayback = false
     }
 
-    private func formattedPlaybackTime(_ rawSeconds: TimeInterval) -> String {
-        guard rawSeconds.isFinite, rawSeconds >= 0 else {
-            return "0:00"
+    private func stateTint(for state: OverlayContentState) -> Color {
+        switch state {
+        case .loading:
+            .blue
+        case .ready:
+            .green
+        case .unavailable:
+            .secondary
+        case .failed:
+            .red
         }
-
-        let totalSeconds = Int(rawSeconds.rounded(.down))
-        let minutes = totalSeconds / 60
-        let seconds = totalSeconds % 60
-        return "\(minutes):\(seconds < 10 ? "0" : "")\(seconds)"
     }
 
     #if ENABLE_APPLE_TRANSLATION
@@ -443,19 +502,110 @@ struct LyricsOverlayView: View {
     }
     #endif
 
-    private func stateTint(for state: OverlayContentState) -> Color {
-        switch state {
-        case .loading:
-            .blue
-        case .ready:
-            .green
-        case .unavailable:
-            .secondary
-        case .failed:
-            .red
+}
+
+private struct MusicPlaybackProgressSlider: View {
+    @Binding private var value: Double
+    private let range: ClosedRange<Double>
+    private let isEnabled: Bool
+    private let onEditingChanged: (Bool) -> Void
+    @State private var isDragging = false
+
+    init(
+        value: Binding<Double>,
+        in range: ClosedRange<Double>,
+        isEnabled: Bool,
+        onEditingChanged: @escaping (Bool) -> Void
+    ) {
+        _value = value
+        self.range = range
+        self.isEnabled = isEnabled
+        self.onEditingChanged = onEditingChanged
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let width = max(1, proxy.size.width)
+            let progress = normalizedProgress
+            let fillWidth = width * CGFloat(progress)
+            let knobSize: CGFloat = 12
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.secondary.opacity(isEnabled ? 0.30 : 0.18))
+                    .frame(height: 4)
+
+                Capsule()
+                    .fill(Color.primary.opacity(isEnabled ? 0.64 : 0.26))
+                    .frame(width: max(0, fillWidth), height: 4)
+
+                Circle()
+                    .fill(Color.primary.opacity(isEnabled ? 0.92 : 0.34))
+                    .frame(width: knobSize, height: knobSize)
+                    .offset(x: min(max(0, fillWidth - knobSize / 2), max(0, width - knobSize)))
+            }
+            .frame(maxHeight: .infinity, alignment: .center)
+            .contentShape(Rectangle())
+            .gesture(dragGesture(width: width))
+            .allowsHitTesting(isEnabled)
+        }
+        .frame(minHeight: 18)
+        .opacity(isEnabled ? 1 : 0.55)
+        .disabled(!isEnabled)
+        .accessibilityValue("\(Int((normalizedProgress * 100).rounded())) percent")
+        .accessibilityAdjustableAction { direction in
+            adjustValue(direction)
         }
     }
 
+    private var normalizedProgress: Double {
+        let span = range.upperBound - range.lowerBound
+        guard span > 0 else { return 0 }
+        return min(1, max(0, (value - range.lowerBound) / span))
+    }
+
+    private func dragGesture(width: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { gesture in
+                guard isEnabled else { return }
+                if !isDragging {
+                    isDragging = true
+                    onEditingChanged(true)
+                }
+                updateValue(at: gesture.location.x, width: width)
+            }
+            .onEnded { gesture in
+                guard isEnabled else { return }
+                updateValue(at: gesture.location.x, width: width)
+                isDragging = false
+                onEditingChanged(false)
+            }
+    }
+
+    private func updateValue(at xPosition: CGFloat, width: CGFloat) {
+        let span = range.upperBound - range.lowerBound
+        guard span > 0 else { return }
+        let progress = min(1, max(0, Double(xPosition / max(width, 1))))
+        value = range.lowerBound + progress * span
+    }
+
+    private func adjustValue(_ direction: AccessibilityAdjustmentDirection) {
+        guard isEnabled else { return }
+        let span = range.upperBound - range.lowerBound
+        guard span > 0 else { return }
+        let step = max(span / 100, 1)
+
+        onEditingChanged(true)
+        switch direction {
+        case .increment:
+            value = min(range.upperBound, value + step)
+        case .decrement:
+            value = max(range.lowerBound, value - step)
+        @unknown default:
+            break
+        }
+        onEditingChanged(false)
+    }
 }
 
 private struct LyricsLineStackView: View {

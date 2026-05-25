@@ -74,7 +74,7 @@ final class FloatingPanelController: NSObject {
     }
 
     private func applySize(appState: AppState, to panel: NSPanel) {
-        let panelSize = NSSize(width: appState.overlayWidthPreset.width, height: LyricsOverlayLayout.panelHeight)
+        let panelSize = panelSize(for: appState)
         let frame = FloatingPanelPlacement.framePreservingTopCenter(
             currentFrame: panel.frame,
             size: panelSize
@@ -109,6 +109,9 @@ final class FloatingPanelController: NSObject {
         hostingView.rootView = LyricsOverlayView(
             appState: appState,
             onTranslationPreparationCompleted: onTranslationPreparationCompleted,
+            onPresentationLayoutChanged: { [weak self] in
+                self?.updateLayout(appState: appState)
+            },
             playbackCommands: playbackCommands
         )
     }
@@ -120,8 +123,7 @@ final class FloatingPanelController: NSObject {
     ) -> NSPanel {
         AppTelemetry.measure("FloatingPanelCreate") {
             AppTelemetry.windowing.info("Create floating panel")
-            let panelWidth = CGFloat(appState.overlayWidthPreset.width)
-            let panelSize = NSSize(width: panelWidth, height: LyricsOverlayLayout.panelHeight)
+            let panelSize = panelSize(for: appState)
             let panel = NSPanel(
                 contentRect: NSRect(origin: .zero, size: panelSize),
                 styleMask: [.borderless, .nonactivatingPanel],
@@ -141,6 +143,9 @@ final class FloatingPanelController: NSObject {
             let hostingView = NSHostingView(rootView: LyricsOverlayView(
                 appState: appState,
                 onTranslationPreparationCompleted: onTranslationPreparationCompleted,
+                onPresentationLayoutChanged: { [weak self] in
+                    self?.updateLayout(appState: appState)
+                },
                 playbackCommands: playbackCommands
             ))
             hostingView.frame = NSRect(origin: .zero, size: panelSize)
@@ -151,6 +156,16 @@ final class FloatingPanelController: NSObject {
 
             return panel
         }
+    }
+
+    private func panelSize(for appState: AppState) -> NSSize {
+        NSSize(
+            width: appState.overlayWidthPreset.width,
+            height: LyricsOverlayLayout.panelHeight(
+                for: appState.overlaySnapshot,
+                isLyricsExpanded: appState.isLyricsOverlayExpanded
+            )
+        )
     }
 
     private func initialFrame(for size: NSSize) -> NSRect {
