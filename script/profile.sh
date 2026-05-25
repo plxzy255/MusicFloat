@@ -117,7 +117,7 @@ build_app() {
     -derivedDataPath "$DERIVED_DATA_DIR"
   )
   if apple_translation_build_enabled; then
-    build_command+=(SWIFT_ACTIVE_COMPILATION_CONDITIONS=ENABLE_APPLE_TRANSLATION)
+    build_command+=('SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) ENABLE_APPLE_TRANSLATION')
   fi
   build_command+=(build)
 

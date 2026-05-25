@@ -250,7 +250,7 @@ stop_app
 
 extra_build_settings=()
 if [[ "${ENABLE_APPLE_TRANSLATION_BUILD:-0}" == "1" || "${ENABLE_APPLE_TRANSLATION_BUILD:-}" == "true" ]]; then
-  extra_build_settings+=(SWIFT_ACTIVE_COMPILATION_CONDITIONS=ENABLE_APPLE_TRANSLATION)
+  extra_build_settings+=('SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) ENABLE_APPLE_TRANSLATION')
 fi
 
 /usr/bin/xcodebuild \

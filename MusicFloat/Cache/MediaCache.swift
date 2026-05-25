@@ -11,6 +11,19 @@ nonisolated enum MediaCacheNamespace: String, Codable, Sendable {
 nonisolated struct MediaCacheKey: Hashable, Sendable {
     let namespace: MediaCacheNamespace
     let rawValue: String
+
+    static func redactedRawValue(prefix: String, components: [String]) -> String {
+        var normalized = "\(prefix)\n"
+        for component in components {
+            normalized += "\(component.utf8.count):\(component)\n"
+        }
+        let digest = SHA256.hash(data: Data(normalized.utf8))
+        let hex = digest.map { byte in
+            let value = String(byte, radix: 16)
+            return value.count == 1 ? "0\(value)" : value
+        }.joined()
+        return "\(prefix):\(hex)"
+    }
 }
 
 nonisolated enum MediaCachePayload: Equatable, Sendable {

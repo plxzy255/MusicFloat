@@ -341,6 +341,15 @@ final class ProviderPipelineControllerTests: XCTestCase {
 
         XCTAssertEqual(firstKey.namespace, .translation)
         XCTAssertNotEqual(firstKey.rawValue, secondKey.rawValue)
+        XCTAssertEqual(
+            firstKey.rawValue,
+            ProviderPipelineController.translationCacheKey(
+                providerIdentifier: "test-provider",
+                targetLanguageIdentifier: "fr-FR",
+                document: first
+            ).rawValue
+        )
+        XCTAssertTrue(firstKey.rawValue.hasPrefix("translation-v1:"))
         XCTAssertFalse(firstKey.rawValue.contains("Private lyric text"))
         XCTAssertFalse(secondKey.rawValue.contains("Different private lyric text"))
     }

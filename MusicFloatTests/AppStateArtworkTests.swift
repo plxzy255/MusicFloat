@@ -194,6 +194,8 @@ final class AppStateArtworkTests: XCTestCase {
         let key = AppleMusicArtworkProvider.artworkCacheKey(for: track)
 
         XCTAssertEqual(key.namespace, .artwork)
+        XCTAssertEqual(key.rawValue, AppleMusicArtworkProvider.artworkCacheKey(for: track).rawValue)
+        XCTAssertTrue(key.rawValue.hasPrefix("artwork-v1:"))
         XCTAssertFalse(key.rawValue.contains("Private Title"))
         XCTAssertFalse(key.rawValue.contains("Artist"))
         XCTAssertFalse(key.rawValue.contains("Album"))

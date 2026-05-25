@@ -66,14 +66,16 @@ final class AppleMusicArtworkProvider {
     }
 
     static func artworkCacheKey(for track: NowPlayingTrack) -> MediaCacheKey {
-        var hasher = Hasher()
-        hasher.combine("artwork-v1")
-        hasher.combine(track.providerName)
-        hasher.combine(track.id)
-        hasher.combine(track.duration)
         return MediaCacheKey(
             namespace: .artwork,
-            rawValue: "artwork-v1:\(hasher.finalize())"
+            rawValue: MediaCacheKey.redactedRawValue(
+                prefix: "artwork-v1",
+                components: [
+                    track.providerName,
+                    track.id,
+                    String(track.duration)
+                ]
+            )
         )
     }
 }

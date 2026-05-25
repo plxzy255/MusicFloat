@@ -456,29 +456,33 @@ final class ProviderPipelineController {
         targetLanguageIdentifier: String,
         document: LyricsDocument
     ) -> MediaCacheKey {
-        var hasher = Hasher()
-        hasher.combine("translation-v1")
-        hasher.combine(providerIdentifier)
-        hasher.combine(LyricsDocument.normalizedLanguageIdentifier(targetLanguageIdentifier) ?? targetLanguageIdentifier)
-        hasher.combine(document.source.rawValue)
-        hasher.combine(document.isTimed)
-        hasher.combine(document.sourceLanguageIdentifier)
+        var components = [
+            providerIdentifier,
+            LyricsDocument.normalizedLanguageIdentifier(targetLanguageIdentifier) ?? targetLanguageIdentifier,
+            document.source.rawValue,
+            document.isTimed ? "timed" : "plain",
+            document.sourceLanguageIdentifier ?? "source-language-unknown"
+        ]
         for line in document.lines {
-            hasher.combine(line.id)
-            hasher.combine(line.text)
-            hasher.combine(line.startTime)
-            hasher.combine(line.endTime)
+            components.append(String(line.id))
+            components.append(line.text)
+            components.append(cacheComponent(line.startTime))
+            components.append(cacheComponent(line.endTime))
             for syllable in line.syllables {
-                hasher.combine(syllable.text)
-                hasher.combine(syllable.startTime)
-                hasher.combine(syllable.endTime)
+                components.append(syllable.text)
+                components.append(cacheComponent(syllable.startTime))
+                components.append(cacheComponent(syllable.endTime))
             }
         }
 
         return MediaCacheKey(
             namespace: .translation,
-            rawValue: "translation-v1:\(hasher.finalize())"
+            rawValue: MediaCacheKey.redactedRawValue(prefix: "translation-v1", components: components)
         )
+    }
+
+    private static func cacheComponent(_ value: TimeInterval?) -> String {
+        value.map { String($0) } ?? "nil"
     }
 
     private func cachedTranslation(for key: MediaCacheKey) async -> LyricTranslation? {
