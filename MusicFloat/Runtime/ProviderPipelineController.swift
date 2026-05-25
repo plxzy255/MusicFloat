@@ -149,6 +149,22 @@ final class ProviderPipelineController {
             observedAppState = nil
             return
         }
+        guard appState.providerRuntimeState != .loading else {
+            axObserver.stop()
+            observedAppState = nil
+            return
+        }
+
+        let current = appState.lyricsDocument
+        if Self.skipsIntegratedVisibleLyricsRefresh(for: current) {
+            // Authoritative timed document straight from Apple. Do not
+            // overwrite with a lagging AX scrape and do not calibrate —
+            // the TTML clock IS ground truth here.
+            axObserver.stop()
+            observedAppState = nil
+            return
+        }
+
         startAXObserverIfNeeded(appState: appState)
         performIntegratedVisibleLyricsRefresh(
             appState: appState,
@@ -164,6 +180,9 @@ final class ProviderPipelineController {
               appState.isLiveModeRunning else {
             return
         }
+        guard appState.providerRuntimeState != .loading else {
+            return
+        }
 
         let now = Date()
         guard now.timeIntervalSince(lastIntegratedVisibleLyricsRefresh) >= minimumInterval else {
@@ -173,9 +192,6 @@ final class ProviderPipelineController {
 
         let current = appState.lyricsDocument
         if Self.skipsIntegratedVisibleLyricsRefresh(for: current) {
-            // Authoritative timed document straight from Apple. Do not
-            // overwrite with a lagging AX scrape and do not calibrate —
-            // the TTML clock IS ground truth here.
             return
         }
         if current.source == .lrclib, current.isTimed {

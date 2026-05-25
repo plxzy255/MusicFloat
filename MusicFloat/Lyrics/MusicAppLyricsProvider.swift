@@ -426,7 +426,7 @@ enum MusicAppLyricsProvider {
 
     private static func logEmptyResult(_ raw: String) {
         if raw == "__EMPTY__" {
-            AppTelemetry.performance.info("Music.app AppleScript lyrics empty for current track; trying Music UI lyrics")
+            AppTelemetry.performance.info("Music.app AppleScript lyrics empty for current track; trying Apple Music web")
         } else if raw.hasPrefix("__STATE__||") {
             let state = raw.replacingOccurrences(of: "__STATE__||", with: "")
             AppTelemetry.performance.info("Music.app AppleScript lyrics unavailable in player state=\(state, privacy: .public)")

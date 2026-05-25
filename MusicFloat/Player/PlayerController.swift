@@ -62,8 +62,8 @@ final class PlayerController {
             )
             appState.updatePlayerState(initial)
             var lastTrackID = initial.track?.id
-            onTrackChanged?(initial.track)
             self.restartLiveTick(appState: appState, onLiveTick: onLiveTick)
+            onTrackChanged?(initial.track)
 
             for await state in bridge.events() {
                 if Task.isCancelled { break }
