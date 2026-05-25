@@ -18,7 +18,6 @@ final class PlayerController {
     /// than normal clock drift.
     private static let seekDetectionThreshold: TimeInterval = 2.0
     private static let liveLineTickCap: TimeInterval = 1.0
-    private static let liveSyllableTickCap: TimeInterval = 0.12
     private static let liveTickMinimum: TimeInterval = 0.03
     private static let resyncFailureBackoffCap: TimeInterval = 10.0
 
@@ -294,26 +293,16 @@ final class PlayerController {
             var consecutiveResyncFailures = 0
 
             while !Task.isCancelled {
-                // Sleep until the next lyric boundary. Syllable-timed Apple
-                // lyrics need a tighter cap than line-synced documents so the
-                // active word does not jump over short spans.
-                let document = appState.lyricsDocument
-                let nextSyllable = self.syncEngine.nextSyllableBoundary(
-                    in: document,
-                    after: elapsed + appState.effectiveLyricOffsetSeconds
-                )
-                let nextLine = self.syncEngine.nextLineStart(
-                    in: document,
-                    after: elapsed + appState.effectiveLyricOffsetSeconds,
+                // Sleep until the next lyric line boundary or the watchdog
+                // cadence. Syllable fill is now animated locally in the active
+                // lyric row, so the whole overlay no longer needs a 120 ms
+                // app-state tick just to move the karaoke mask.
+                let sleep = Self.liveTickInterval(
+                    currentElapsed: elapsed,
+                    lyricsDocument: appState.lyricsDocument,
+                    lyricOffsetSeconds: appState.effectiveLyricOffsetSeconds,
                     duration: appState.playerState.track?.duration
                 )
-                let nextBoundary = [nextSyllable, nextLine].compactMap { $0 }.min()
-                let targetElapsed = (nextBoundary.map { $0 - appState.effectiveLyricOffsetSeconds }) ?? (elapsed + Self.liveLineTickCap)
-                let targetDelta = targetElapsed - elapsed
-                let tickCap = nextSyllable != nil && targetDelta <= Self.liveLineTickCap
-                    ? Self.liveSyllableTickCap
-                    : Self.liveLineTickCap
-                let sleep = max(Self.liveTickMinimum, min(tickCap, targetDelta))
                 try? await Task.sleep(nanoseconds: UInt64(sleep * 1_000_000_000))
                 if Task.isCancelled { return }
 
@@ -379,6 +368,23 @@ final class PlayerController {
 
     static func liveTickInitialElapsed(appState: AppState) -> TimeInterval {
         appState.effectiveElapsedTime
+    }
+
+    static func liveTickInterval(
+        currentElapsed: TimeInterval,
+        lyricsDocument: LyricsDocument,
+        lyricOffsetSeconds: Double,
+        duration: TimeInterval?
+    ) -> TimeInterval {
+        let nextLine = LyricsSyncEngine().nextLineStart(
+            in: lyricsDocument,
+            after: currentElapsed + lyricOffsetSeconds,
+            duration: duration
+        )
+        let targetElapsed = nextLine.map { $0 - lyricOffsetSeconds }
+            ?? (currentElapsed + Self.liveLineTickCap)
+        let targetDelta = targetElapsed - currentElapsed
+        return max(Self.liveTickMinimum, min(Self.liveLineTickCap, targetDelta))
     }
 
     static func liveResyncDecision(

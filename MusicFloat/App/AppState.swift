@@ -76,6 +76,8 @@ struct LyricsOverlaySnapshot: Equatable, Sendable {
     let lyricText: String
     let activeLine: LyricLine?
     let effectiveLyricTime: TimeInterval
+    let lyricClockReferenceDate: Date
+    let isLyricClockRunning: Bool
     let lyricWindow: [LyricsOverlayLine]
     let translationText: String?
     let attributionText: String
@@ -143,6 +145,8 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
                 lyricText: "Listening for a mock playback snapshot...",
                 activeLine: nil,
                 effectiveLyricTime: playerState.elapsedTime + lyricOffsetSeconds + lyricsDocument.offsetCorrection,
+                lyricClockReferenceDate: playerState.updatedAt,
+                isLyricClockRunning: playerState.playbackStatus == .playing,
                 lyricWindow: [],
                 translationText: nil,
                 attributionText: "Mock pipeline",
@@ -156,6 +160,8 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
                 lyricText: "Lyrics unavailable for this track",
                 activeLine: nil,
                 effectiveLyricTime: playerState.elapsedTime + lyricOffsetSeconds + lyricsDocument.offsetCorrection,
+                lyricClockReferenceDate: playerState.updatedAt,
+                isLyricClockRunning: playerState.playbackStatus == .playing,
                 lyricWindow: [],
                 translationText: showsTranslation ? "Translation will wait for lyrics" : nil,
                 attributionText: "No provider result",
@@ -169,6 +175,8 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
                 lyricText: message,
                 activeLine: nil,
                 effectiveLyricTime: playerState.elapsedTime + lyricOffsetSeconds + lyricsDocument.offsetCorrection,
+                lyricClockReferenceDate: playerState.updatedAt,
+                isLyricClockRunning: playerState.playbackStatus == .playing,
                 lyricWindow: [],
                 translationText: nil,
                 attributionText: "Mock failure state",
@@ -200,6 +208,8 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
                 lyricText: lyricText,
                 activeLine: activeLine,
                 effectiveLyricTime: effectiveLyricTime,
+                lyricClockReferenceDate: playerState.updatedAt,
+                isLyricClockRunning: playerState.playbackStatus == .playing,
                 lyricWindow: lyricWindow,
                 translationText: translationText,
                 attributionText: Self.attributionText(
