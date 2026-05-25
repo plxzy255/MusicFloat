@@ -155,6 +155,9 @@ final class AppleTranslationProvider: TranslationProvider {
     struct Dependencies {
         var availability: @MainActor (Locale.Language, Locale.Language) async -> AppleTranslationAvailability
         var translate: @MainActor (Locale.Language, Locale.Language, [TranslationRequestPayload]) async throws -> [TranslationResponsePayload]
+        var inferSourceLanguageIdentifier: @MainActor ([LyricLine]) -> String? = { lines in
+            AppleTranslationProvider.inferSourceLanguageIdentifier(from: lines)
+        }
 
         static let live = Dependencies(
             availability: { source, target in
@@ -166,6 +169,9 @@ final class AppleTranslationProvider: TranslationProvider {
                     target: target,
                     requests: requests
                 )
+            },
+            inferSourceLanguageIdentifier: { lines in
+                AppleTranslationProvider.inferSourceLanguageIdentifier(from: lines)
             }
         )
     }
@@ -260,18 +266,19 @@ final class AppleTranslationProvider: TranslationProvider {
         }
 
         #if ENABLE_APPLE_TRANSLATION
-        let inferredSourceIdentifier = document.sourceLanguageIdentifier
-            ?? Self.inferSourceLanguageIdentifier(from: document.lines)
-        guard let sourceIdentifier = inferredSourceIdentifier else {
-            return .status(.unavailable(reason: "Source language unavailable"))
-        }
-        guard let normalizedSource = LyricsDocument.normalizedLanguageIdentifier(sourceIdentifier),
-              let normalizedTarget = LyricsDocument.normalizedLanguageIdentifier(targetLanguageIdentifier) else {
+        guard let normalizedTarget = LyricsDocument.normalizedLanguageIdentifier(targetLanguageIdentifier) else {
             return .status(.unavailable(reason: "Language unavailable"))
         }
 
-        let sourceLanguage = Locale.Language(identifier: normalizedSource)
         let targetLanguage = Locale.Language(identifier: normalizedTarget)
+        guard let normalizedSource = resolvedSourceLanguageIdentifier(
+            for: document,
+            targetLanguage: targetLanguage
+        ) else {
+            return .status(.unavailable(reason: "Source language unavailable"))
+        }
+
+        let sourceLanguage = Locale.Language(identifier: normalizedSource)
         if Self.sameLanguageFamily(sourceLanguage, targetLanguage) {
             return .status(.sourceEqualsTarget)
         }
@@ -334,6 +341,39 @@ final class AppleTranslationProvider: TranslationProvider {
         #else
         return .status(.unavailable(reason: "Apple Translation is not enabled in this build"))
         #endif
+    }
+
+    private func resolvedSourceLanguageIdentifier(
+        for document: LyricsDocument,
+        targetLanguage: Locale.Language
+    ) -> String? {
+        let explicitSource = LyricsDocument.normalizedLanguageIdentifier(document.sourceLanguageIdentifier)
+        guard let explicitSource else {
+            return LyricsDocument.normalizedLanguageIdentifier(
+                dependencies.inferSourceLanguageIdentifier(document.lines)
+            )
+        }
+
+        let explicitLanguage = Locale.Language(identifier: explicitSource)
+        guard Self.sameLanguageFamily(explicitLanguage, targetLanguage) else {
+            return explicitSource
+        }
+
+        guard let inferredSource = LyricsDocument.normalizedLanguageIdentifier(
+            dependencies.inferSourceLanguageIdentifier(document.lines)
+        ) else {
+            return explicitSource
+        }
+
+        let inferredLanguage = Locale.Language(identifier: inferredSource)
+        guard !Self.sameLanguageFamily(inferredLanguage, targetLanguage) else {
+            return explicitSource
+        }
+
+        AppTelemetry.performance.notice(
+            "Translation source language corrected explicit=\(explicitSource, privacy: .public) inferred=\(inferredSource, privacy: .public) target=\(targetLanguage.minimalIdentifier, privacy: .public)"
+        )
+        return inferredSource
     }
 
     private static func failureMessage(for error: any Error) -> String {

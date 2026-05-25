@@ -1,12 +1,40 @@
+import AppKit
 import OSLog
 import SwiftUI
 #if ENABLE_APPLE_TRANSLATION
 @preconcurrency @unsafe import Translation
 #endif
 
+enum LyricsOverlayLayout {
+    static let panelHeight: CGFloat = 248
+    static let albumCoverSize: CGFloat = 96
+}
+
+@MainActor
+struct LyricsOverlayPlaybackCommands {
+    var playPause: () -> Void
+    var previousTrack: () -> Void
+    var nextTrack: () -> Void
+    var setVolume: (Int) -> Void
+    var seek: (TimeInterval) -> Void
+
+    static let disabled = LyricsOverlayPlaybackCommands(
+        playPause: {},
+        previousTrack: {},
+        nextTrack: {},
+        setVolume: { _ in },
+        seek: { _ in }
+    )
+}
+
 struct LyricsOverlayView: View {
     @Bindable var appState: AppState
     var onTranslationPreparationCompleted: () -> Void = {}
+    var playbackCommands: LyricsOverlayPlaybackCommands = .disabled
+    @State private var showsVolumeSlider = false
+    @State private var draftVolume = 50.0
+    @State private var isScrubbingPlayback = false
+    @State private var draftPlaybackPosition = 0.0
     #if ENABLE_APPLE_TRANSLATION
     @State private var preparationConfiguration: TranslationSession.Configuration?
     @State private var activePreparationIdentifier: String?
@@ -31,53 +59,21 @@ struct LyricsOverlayView: View {
         let snapshot = appState.overlaySnapshot
 
         return ZStack {
-            VStack(alignment: .leading, spacing: 9) {
-                HStack(spacing: 8) {
-                    Text(snapshot.contentState.displayName)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(stateTint(for: snapshot.contentState))
-                        .lineLimit(1)
-
-                    Text(snapshot.statusText)
-                        .lineLimit(1)
-
-                    Text(snapshot.attributionText)
-                        .lineLimit(1)
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-                Text(snapshot.trackText)
-                    .font(.callout.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-
-                lyricText(for: snapshot)
-                    .font(.system(.title2, design: .rounded, weight: .semibold))
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.78)
-
-                if let translationText = snapshot.translationText {
-                    Text(translationText)
-                        .font(.system(.body, design: .rounded))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.82)
-                }
-            }
+            overlayContent(for: snapshot)
             .padding(.horizontal, 24)
             .padding(.vertical, 18)
-            .frame(width: CGFloat(snapshot.widthPreset.width), height: 172, alignment: .leading)
+            .frame(width: CGFloat(snapshot.widthPreset.width), height: LyricsOverlayLayout.panelHeight, alignment: .leading)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .stroke(.separator.opacity(0.35), lineWidth: 1)
             }
         }
-        .frame(width: CGFloat(snapshot.widthPreset.width), height: 172)
+        .frame(width: CGFloat(snapshot.widthPreset.width), height: LyricsOverlayLayout.panelHeight)
         .contentShape(Rectangle())
         .onAppear {
             AppTelemetry.windowing.info("Lyrics overlay view appeared")
+            syncDraftVolume()
             #if ENABLE_APPLE_TRANSLATION
             scheduleTranslationPreparationIfNeeded()
             #endif
@@ -85,6 +81,302 @@ struct LyricsOverlayView: View {
         .onDisappear {
             AppTelemetry.windowing.info("Lyrics overlay view disappeared")
         }
+        .onChange(of: appState.musicVolume) {
+            syncDraftVolume()
+        }
+        .onChange(of: appState.playerState.track?.id) {
+            resetDraftPlaybackPosition()
+        }
+    }
+
+    @ViewBuilder
+    private func overlayContent(for snapshot: LyricsOverlaySnapshot) -> some View {
+        if appState.isLiveModeRunning {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 14) {
+                    albumCoverView(artwork: appState.nowPlayingArtwork)
+
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(snapshot.trackText)
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.82)
+
+                        playbackSliderRow
+                        playbackControlsRow
+                    }
+                    .frame(height: LyricsOverlayLayout.albumCoverSize, alignment: .center)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(height: LyricsOverlayLayout.albumCoverSize, alignment: .top)
+
+                lyricBlock(for: snapshot)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else {
+            HStack(alignment: .center, spacing: 14) {
+                if appState.nowPlayingArtwork != nil {
+                    albumCoverView(artwork: appState.nowPlayingArtwork)
+                }
+
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack(spacing: 8) {
+                        Text(snapshot.contentState.displayName)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(stateTint(for: snapshot.contentState))
+                            .lineLimit(1)
+
+                        Text(snapshot.statusText)
+                            .lineLimit(1)
+
+                        Text(snapshot.attributionText)
+                            .lineLimit(1)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                    Text(snapshot.trackText)
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+
+                    lyricBlock(for: snapshot)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func lyricBlock(for snapshot: LyricsOverlaySnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            lyricText(for: snapshot)
+                .font(.system(.title2, design: .rounded, weight: .semibold))
+                .lineLimit(2)
+                .minimumScaleFactor(0.78)
+
+            if let translationText = snapshot.translationText {
+                Text(translationText)
+                    .font(.system(.body, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.82)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func albumCoverView(artwork: NSImage?) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+
+        Group {
+            if let artwork {
+                Image(nsImage: artwork)
+                    .resizable()
+                    .aspectRatio(1, contentMode: .fill)
+            } else {
+                ZStack {
+                    shape.fill(.quaternary)
+                    Image(systemName: "music.note")
+                        .font(.system(size: 32, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(width: LyricsOverlayLayout.albumCoverSize, height: LyricsOverlayLayout.albumCoverSize)
+        .clipShape(shape)
+        .overlay {
+            shape.stroke(.separator.opacity(0.4), lineWidth: 1)
+        }
+        .accessibilityLabel(artwork == nil ? "Album artwork unavailable" : "Album artwork")
+    }
+
+    private var playbackControlsRow: some View {
+        HStack(spacing: 7) {
+            playbackButton(
+                systemName: "backward.fill",
+                label: "Previous track",
+                help: "Previous track",
+                action: playbackCommands.previousTrack
+            )
+
+            playbackButton(
+                systemName: appState.playerState.playbackStatus == .playing ? "pause.fill" : "play.fill",
+                label: appState.playerState.playbackStatus == .playing ? "Pause" : "Play",
+                help: appState.playerState.playbackStatus == .playing ? "Pause Apple Music" : "Play Apple Music",
+                action: playbackCommands.playPause
+            )
+
+            playbackButton(
+                systemName: "forward.fill",
+                label: "Next track",
+                help: "Next track",
+                action: playbackCommands.nextTrack
+            )
+
+            playbackButton(
+                systemName: volumeSystemImageName,
+                label: "Volume",
+                help: showsVolumeSlider ? "Hide volume" : "Show volume",
+                action: toggleVolumeSlider
+            )
+
+            if showsVolumeSlider {
+                Slider(
+                    value: $draftVolume,
+                    in: 0...100,
+                    onEditingChanged: { isEditing in
+                        if !isEditing {
+                            commitVolumeChange()
+                        }
+                    }
+                )
+                .frame(width: volumeSliderWidth)
+                .controlSize(.small)
+                .disabled(!playbackControlsEnabled)
+                .accessibilityLabel("Apple Music volume")
+
+                Text("\(MusicPlaybackCommand.clampedVolume(Int(draftVolume.rounded())))")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, alignment: .trailing)
+            }
+        }
+        .frame(height: 26, alignment: .leading)
+    }
+
+    private var playbackSliderRow: some View {
+        let duration = playbackDuration
+        return HStack(spacing: 8) {
+            Text(formattedPlaybackTime(currentPlaybackPosition))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 36, alignment: .leading)
+
+            Slider(
+                value: playbackPositionBinding(duration: duration),
+                in: 0...max(1, duration),
+                onEditingChanged: playbackScrubEditingChanged
+            )
+            .controlSize(.small)
+            .disabled(!playbackControlsEnabled || duration <= 0)
+            .accessibilityLabel("Playback position")
+
+            Text(formattedPlaybackTime(duration))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 36, alignment: .trailing)
+        }
+        .frame(height: 20, alignment: .leading)
+    }
+
+    private func playbackButton(
+        systemName: String,
+        label: String,
+        help: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 12, weight: .semibold))
+                .frame(width: 26, height: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(playbackControlsEnabled ? .primary : .secondary)
+        .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .opacity(playbackControlsEnabled ? 1 : 0.55)
+        .disabled(!playbackControlsEnabled)
+        .help(help)
+        .accessibilityLabel(label)
+    }
+
+    private var playbackControlsEnabled: Bool {
+        appState.isLiveModeRunning && !appState.isPlaybackCommandInFlight
+    }
+
+    private var playbackDuration: TimeInterval {
+        max(0, appState.playerState.track?.duration ?? 0)
+    }
+
+    private var currentPlaybackPosition: TimeInterval {
+        let duration = playbackDuration
+        let current = isScrubbingPlayback ? draftPlaybackPosition : appState.effectiveElapsedTime
+        return MusicPlaybackCommand.clampedPlaybackPosition(current, duration: duration)
+    }
+
+    private func playbackPositionBinding(duration: TimeInterval) -> Binding<Double> {
+        Binding(
+            get: {
+                currentPlaybackPosition
+            },
+            set: { nextValue in
+                isScrubbingPlayback = true
+                draftPlaybackPosition = MusicPlaybackCommand.clampedPlaybackPosition(nextValue, duration: duration)
+            }
+        )
+    }
+
+    private func playbackScrubEditingChanged(_ isEditing: Bool) {
+        if isEditing {
+            draftPlaybackPosition = currentPlaybackPosition
+            isScrubbingPlayback = true
+            return
+        }
+
+        let position = MusicPlaybackCommand.clampedPlaybackPosition(
+            draftPlaybackPosition,
+            duration: playbackDuration
+        )
+        draftPlaybackPosition = position
+        isScrubbingPlayback = false
+        playbackCommands.seek(position)
+    }
+
+    private var volumeSystemImageName: String {
+        let volume = appState.musicVolume ?? MusicPlaybackCommand.clampedVolume(Int(draftVolume.rounded()))
+        return volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill"
+    }
+
+    private var volumeSliderWidth: CGFloat {
+        appState.overlayWidthPreset == .compact ? 84 : 116
+    }
+
+    private func toggleVolumeSlider() {
+        syncDraftVolume()
+        showsVolumeSlider.toggle()
+    }
+
+    private func syncDraftVolume() {
+        guard let volume = appState.musicVolume else { return }
+        draftVolume = Double(MusicPlaybackCommand.clampedVolume(volume))
+    }
+
+    private func commitVolumeChange() {
+        let volume = MusicPlaybackCommand.clampedVolume(Int(draftVolume.rounded()))
+        draftVolume = Double(volume)
+        playbackCommands.setVolume(volume)
+    }
+
+    private func resetDraftPlaybackPosition() {
+        draftPlaybackPosition = MusicPlaybackCommand.clampedPlaybackPosition(
+            appState.effectiveElapsedTime,
+            duration: playbackDuration
+        )
+        isScrubbingPlayback = false
+    }
+
+    private func formattedPlaybackTime(_ rawSeconds: TimeInterval) -> String {
+        guard rawSeconds.isFinite, rawSeconds >= 0 else {
+            return "0:00"
+        }
+
+        let totalSeconds = Int(rawSeconds.rounded(.down))
+        let minutes = totalSeconds / 60
+        let seconds = totalSeconds % 60
+        return "\(minutes):\(seconds < 10 ? "0" : "")\(seconds)"
     }
 
     #if ENABLE_APPLE_TRANSLATION

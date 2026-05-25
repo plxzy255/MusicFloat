@@ -22,6 +22,7 @@ struct MusicFloatApp: App {
 private final class MusicFloatAppController {
     let appState: AppState
 
+    private let launchesInDemoMode = CommandLine.arguments.contains("--demo")
     private let liveProviderPipelineControllerStore: LiveProviderPipelineControllerStore
     private let panelController: FloatingPanelController
     private let playerController: PlayerController
@@ -63,18 +64,27 @@ private final class MusicFloatAppController {
 
         AppTelemetry.lifecycle.info("MusicFloat app initialized")
 
-        if CommandLine.arguments.contains("--demo") {
+        applyStartupMode()
+    }
+
+    private func applyStartupMode() {
+        let arguments = CommandLine.arguments
+
+        if launchesInDemoMode {
             AppTelemetry.lifecycle.info("Demo mode requested - auto-starting overlay with mock preview in 500ms")
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self] in
                 self?.toggleOverlay()
             }
+            return
         }
 
-        if CommandLine.arguments.contains("--live") {
+        if arguments.contains("--live") {
             AppTelemetry.lifecycle.info("Live mode requested - auto-starting Live Apple Music mode and overlay in 500ms")
-            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self] in
-                self?.toggleLiveAppleMusic()
-            }
+        } else {
+            AppTelemetry.lifecycle.info("Default startup - auto-starting Live Apple Music mode and overlay in 500ms")
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) { [weak self] in
+            self?.startLiveAppleMusic()
         }
     }
 
@@ -109,7 +119,8 @@ private final class MusicFloatAppController {
             activeProviderPipelineController.prepareOverlayContent(appState: appState)
             panelController.show(
                 appState: appState,
-                onTranslationPreparationCompleted: { [weak self] in self?.retryTranslationAfterPreparation() }
+                onTranslationPreparationCompleted: { [weak self] in self?.retryTranslationAfterPreparation() },
+                playbackCommands: overlayPlaybackCommands
             )
             playerController.overlayVisibilityChanged(true, appState: appState)
         } else {
@@ -130,6 +141,12 @@ private final class MusicFloatAppController {
     }
 
     private func toggleLiveAppleMusic() {
+        guard !launchesInDemoMode else {
+            AppTelemetry.menuBar.notice("Live Apple Music toggle ignored in demo mode")
+            statusItemController.refreshStatusIcon()
+            return
+        }
+
         if appState.isLiveModeRunning {
             playerController.stopLiveAppleMusic(appState: appState)
             liveProviderPipelineControllerStore.current?.stopHiddenWork(appState: appState)
@@ -138,31 +155,37 @@ private final class MusicFloatAppController {
             }
             appState.runtimeFeatureFlags = .architectureDefault
         } else {
-            let liveProviderPipelineController = getLiveProviderPipelineController()
-            appState.runtimeFeatureFlags = .liveAppleMusic
-            showOverlayForLiveAppleMusicIfNeeded()
-            playerController.startLiveAppleMusic(appState: appState) { [weak self, appState, artworkProvider, liveProviderPipelineController] track in
-                artworkProvider.refreshArtwork(for: track, appState: appState) { [weak self] in
-                    self?.statusItemController.refreshStatusIcon()
-                }
-                guard track != nil else {
-                    AppTelemetry.performance.info("Live track payload empty; preserving current lyrics state")
-                    liveProviderPipelineController.cancelInFlightLoadPreservingState(appState: appState)
-                    return
-                }
-                guard appState.isOverlayVisible || appState.runtimeFeatureFlags.allowsHiddenProviderRefresh else {
-                    liveProviderPipelineController.cancelInFlightLoadPreservingState(appState: appState)
-                    AppTelemetry.performance.info("Live track refresh deferred while overlay hidden")
-                    return
-                }
-                liveProviderPipelineController.refreshOverlayContentForLiveTrack(appState: appState)
-                self?.statusItemController.refreshStatusIcon()
-            } onLiveTick: { [appState, liveProviderPipelineController] in
-                liveProviderPipelineController.refreshIntegratedVisibleLyrics(appState: appState)
-            }
+            startLiveAppleMusic()
         }
 
         statusItemController.refreshStatusIcon()
+    }
+
+    private func startLiveAppleMusic() {
+        guard !appState.isLiveModeRunning else { return }
+
+        let liveProviderPipelineController = getLiveProviderPipelineController()
+        appState.runtimeFeatureFlags = .liveAppleMusic
+        showOverlayForLiveAppleMusicIfNeeded()
+        playerController.startLiveAppleMusic(appState: appState) { [weak self, appState, artworkProvider, liveProviderPipelineController] track in
+            artworkProvider.refreshArtwork(for: track, appState: appState) { [weak self] in
+                self?.statusItemController.refreshStatusIcon()
+            }
+            guard track != nil else {
+                AppTelemetry.performance.info("Live track payload empty; preserving current lyrics state")
+                liveProviderPipelineController.cancelInFlightLoadPreservingState(appState: appState)
+                return
+            }
+            guard appState.isOverlayVisible || appState.runtimeFeatureFlags.allowsHiddenProviderRefresh else {
+                liveProviderPipelineController.cancelInFlightLoadPreservingState(appState: appState)
+                AppTelemetry.performance.info("Live track refresh deferred while overlay hidden")
+                return
+            }
+            liveProviderPipelineController.refreshOverlayContentForLiveTrack(appState: appState)
+            self?.statusItemController.refreshStatusIcon()
+        } onLiveTick: { [appState, liveProviderPipelineController] in
+            liveProviderPipelineController.refreshIntegratedVisibleLyrics(appState: appState)
+        }
     }
 
     private func showOverlayForLiveAppleMusicIfNeeded() {
@@ -171,9 +194,32 @@ private final class MusicFloatAppController {
         AppTelemetry.windowing.notice("Showing lyrics overlay for Live Apple Music")
         panelController.show(
             appState: appState,
-            onTranslationPreparationCompleted: { [weak self] in self?.retryTranslationAfterPreparation() }
+            onTranslationPreparationCompleted: { [weak self] in self?.retryTranslationAfterPreparation() },
+            playbackCommands: overlayPlaybackCommands
         )
         playerController.overlayVisibilityChanged(true, appState: appState)
+    }
+
+    private var overlayPlaybackCommands: LyricsOverlayPlaybackCommands {
+        LyricsOverlayPlaybackCommands(
+            playPause: { [weak self] in self?.performPlaybackCommand(.playPause) },
+            previousTrack: { [weak self] in self?.performPlaybackCommand(.previousTrack) },
+            nextTrack: { [weak self] in self?.performPlaybackCommand(.nextTrack) },
+            setVolume: { [weak self] volume in self?.performPlaybackCommand(.setVolume(volume)) },
+            seek: { [weak self] position in self?.performPlaybackCommand(.seek(position)) }
+        )
+    }
+
+    private func performPlaybackCommand(_ command: MusicPlaybackCommand) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await playerController.performLivePlaybackCommand(
+                command,
+                appState: appState,
+                isDemoMode: launchesInDemoMode
+            )
+            statusItemController.refreshStatusIcon()
+        }
     }
 
     private func resetMockPlayback() {

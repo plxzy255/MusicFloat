@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import XCTest
 @testable import MusicFloat
 
@@ -84,5 +85,81 @@ final class AppStateArtworkTests: XCTestCase {
 
         XCTAssertNil(appState.nowPlayingArtwork)
         XCTAssertEqual(appState.nowPlayingArtworkTrackID, secondTrack.id)
+    }
+
+    @MainActor
+    func testClearingArtworkRemovesTrackAssociation() {
+        let defaults = UserDefaults(suiteName: "MusicFloatTests.artworkClearAssociation.\(UUID().uuidString)")!
+        let appState = AppState(userDefaults: defaults)
+        let track = NowPlayingTrack(
+            id: "track-a",
+            title: "First",
+            artist: "Artist",
+            album: "Album",
+            duration: 180,
+            providerName: "Test"
+        )
+
+        appState.updatePlayerState(PlayerState(
+            playbackStatus: .playing,
+            track: track,
+            elapsedTime: 0,
+            updatedAt: Date()
+        ))
+        appState.applyNowPlayingArtwork(NSImage(size: NSSize(width: 4, height: 4)), forTrackID: track.id)
+
+        appState.clearNowPlayingArtwork()
+
+        XCTAssertNil(appState.nowPlayingArtwork)
+        XCTAssertNil(appState.nowPlayingArtworkTrackID)
+    }
+
+    @MainActor
+    func testArtworkDownsamplingKeepsLargestPixelDimensionWithinLimit() async throws {
+        let sourceData = try makeImageData(width: 1024, height: 768)
+
+        let maybeThumbnailData = await ArtworkImageProcessor.downsampledImageData(
+            from: sourceData,
+            maxPixelSize: 256
+        )
+        let thumbnailData = try XCTUnwrap(maybeThumbnailData)
+        let pixelSize = try imagePixelSize(from: thumbnailData)
+
+        XCTAssertLessThanOrEqual(max(pixelSize.width, pixelSize.height), 256)
+        XCTAssertGreaterThan(pixelSize.width, 0)
+        XCTAssertGreaterThan(pixelSize.height, 0)
+    }
+
+    @MainActor
+    private func makeImageData(width: Int, height: Int) throws -> Data {
+        let image = NSImage(size: NSSize(width: width, height: height))
+        image.lockFocus()
+        NSColor.systemBlue.setFill()
+        NSRect(x: 0, y: 0, width: width, height: height).fill()
+        NSColor.systemPink.setFill()
+        NSRect(x: width / 4, y: height / 4, width: width / 2, height: height / 2).fill()
+        image.unlockFocus()
+
+        guard let data = image.tiffRepresentation else {
+            throw TestImageError.makeImageFailed
+        }
+
+        return data
+    }
+
+    private func imagePixelSize(from data: Data) throws -> (width: Int, height: Int) {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int else {
+            throw TestImageError.readPropertiesFailed
+        }
+
+        return (width, height)
+    }
+
+    private enum TestImageError: Error {
+        case makeImageFailed
+        case readPropertiesFailed
     }
 }

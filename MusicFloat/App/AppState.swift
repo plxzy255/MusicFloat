@@ -211,6 +211,8 @@ final class AppState {
     var overlayContentState: OverlayContentState = .ready
     var playerState: PlayerState
     var nowPlayingArtwork: NSImage?
+    var musicVolume: Int?
+    var isPlaybackCommandInFlight = false
     private(set) var nowPlayingArtworkTrackID: String?
     var lyricsDocument: LyricsDocument
     var translation: LyricTranslation
@@ -426,6 +428,14 @@ final class AppState {
     func clearNowPlayingArtwork() {
         nowPlayingArtwork = nil
         nowPlayingArtworkTrackID = nil
+    }
+
+    func setMusicVolume(_ volume: Int?) {
+        musicVolume = volume.map(MusicPlaybackCommand.clampedVolume)
+    }
+
+    func setPlaybackCommandInFlight(_ isInFlight: Bool) {
+        isPlaybackCommandInFlight = isInFlight
     }
 
     /// High-frequency update — does NOT touch `playerState`, so menu/Settings
