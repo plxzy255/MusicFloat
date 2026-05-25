@@ -49,6 +49,7 @@ struct LyricsOverlayView: View {
     var onTranslationPreparationCompleted: () -> Void = {}
     var onPresentationLayoutChanged: () -> Void = {}
     var playbackCommands: LyricsOverlayPlaybackCommands = .disabled
+    @Environment(\.colorScheme) private var colorScheme
     @State private var accessibilityDisplayOptions = OverlayAccessibilityDisplayOptions.current
     @State private var showsVolumeSlider = false
     @State private var draftVolume = 50.0
@@ -88,7 +89,8 @@ struct LyricsOverlayView: View {
             .frame(width: CGFloat(snapshot.widthPreset.width), height: panelHeight, alignment: .leading)
             .background {
                 LyricsOverlayBackgroundSurface(
-                    displayOptions: accessibilityDisplayOptions
+                    displayOptions: accessibilityDisplayOptions,
+                    colorScheme: colorScheme
                 )
             }
         }
@@ -522,6 +524,7 @@ private struct OverlayAccessibilityDisplayOptions: Equatable {
 
 private struct LyricsOverlayBackgroundSurface: View {
     let displayOptions: OverlayAccessibilityDisplayOptions
+    let colorScheme: ColorScheme
 
     private var shape: RoundedRectangle {
         RoundedRectangle(cornerRadius: LyricsOverlayLayout.cornerRadius, style: .continuous)
@@ -532,10 +535,11 @@ private struct LyricsOverlayBackgroundSurface: View {
             if displayOptions.reduceTransparency {
                 shape.fill(reducedTransparencyFill)
             } else {
-                shape.fill(.regularMaterial)
+                shape.fill(.thinMaterial)
+                shape.fill(surfaceGlaze)
             }
 
-            shape.strokeBorder(.separator.opacity(strokeOpacity), lineWidth: strokeWidth)
+            shape.strokeBorder(borderGradient, lineWidth: strokeWidth)
         }
         .accessibilityHidden(true)
     }
@@ -544,8 +548,38 @@ private struct LyricsOverlayBackgroundSurface: View {
         Color(nsColor: displayOptions.increaseContrast ? .windowBackgroundColor : .controlBackgroundColor)
     }
 
-    private var strokeOpacity: Double {
-        displayOptions.increaseContrast ? 0.75 : 0.35
+    private var surfaceGlaze: LinearGradient {
+        LinearGradient(
+            colors: [
+                Color.white.opacity(colorScheme == .dark ? 0.12 : 0.52),
+                Color(nsColor: .controlAccentColor).opacity(colorScheme == .dark ? 0.05 : 0.08),
+                Color.black.opacity(colorScheme == .dark ? 0.18 : 0.03)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    private var borderGradient: LinearGradient {
+        if displayOptions.increaseContrast {
+            return LinearGradient(
+                colors: [
+                    Color(nsColor: .separatorColor).opacity(0.92),
+                    Color(nsColor: .separatorColor).opacity(0.68)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        }
+
+        return LinearGradient(
+            colors: [
+                Color.white.opacity(colorScheme == .dark ? 0.18 : 0.66),
+                Color(nsColor: .separatorColor).opacity(colorScheme == .dark ? 0.42 : 0.30)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
     }
 
     private var strokeWidth: CGFloat {
