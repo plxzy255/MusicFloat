@@ -15,6 +15,7 @@ final class ProviderPipelineController {
     private let translationProvider: any TranslationProvider
     private var loadTask: Task<Void, Never>?
     private var translationTask: Task<Void, Never>?
+    private var loadingTrackID: String?
     private var lastIntegratedVisibleLyricsRefresh = Date.distantPast
     private let axObserver = MusicAppAXObserver()
     private weak var observedAppState: AppState?
@@ -29,7 +30,18 @@ final class ProviderPipelineController {
 
     func prepareOverlayContent(appState: AppState) {
         AppTelemetry.measure("ProviderPipelineController.prepareOverlayContent") {
+            guard let track = appState.playerState.track else {
+                appState.clearTranslation()
+                appState.setTranslationRuntimeState(.unavailable(reason: "Translation will wait for lyrics"))
+                appState.applyProviderUnavailable()
+                return
+            }
+            let requestedTrackID = track.id
+
             guard loadTask == nil else {
+                if loadingTrackID == requestedTrackID {
+                    AppTelemetry.performance.notice("Provider pipeline duplicate load ignored trackID=\(requestedTrackID, privacy: .public)")
+                }
                 return
             }
 
@@ -37,26 +49,24 @@ final class ProviderPipelineController {
             appState.setProviderRuntimeState(.loading)
             appState.setOverlayContentState(.loading)
             cancelTranslationTask(appState: appState)
+            loadingTrackID = requestedTrackID
 
-            loadTask = Task { @MainActor [weak self, weak appState] in
+            loadTask = Task { @MainActor [weak self, weak appState, track] in
                 await AppTelemetry.measure("ProviderPipelineController.prepareOverlayContent.load") {
                     guard let self, let appState else {
                         return
                     }
 
                     defer {
+                        self.loadingTrackID = nil
                         self.loadTask = nil
                     }
 
-                    guard let track = appState.playerState.track else {
-                        appState.clearTranslation()
-                        appState.setTranslationRuntimeState(.unavailable(reason: "Translation will wait for lyrics"))
-                        appState.applyProviderUnavailable()
-                        return
-                    }
-                    let requestedTrackID = track.id
-
+                    let startedAt = Date()
                     let lyricsResult = await self.lyricsProvider.lyrics(for: track)
+                    AppTelemetry.performance.notice(
+                        "Provider lyrics load finished trackID=\(requestedTrackID, privacy: .public) elapsed=\(Date().timeIntervalSince(startedAt), privacy: .public)"
+                    )
                     guard !Task.isCancelled else {
                         return
                     }
@@ -92,8 +102,15 @@ final class ProviderPipelineController {
     /// Cancels any in-flight load and starts a fresh one. Intended for the
     /// "track changed" signal in live mode.
     func refreshOverlayContent(appState: AppState) {
+        if let trackID = appState.playerState.track?.id,
+           loadTask != nil,
+           loadingTrackID == trackID {
+            AppTelemetry.performance.notice("Provider refresh skipped; same track already loading trackID=\(trackID, privacy: .public)")
+            return
+        }
         loadTask?.cancel()
         loadTask = nil
+        loadingTrackID = nil
         cancelTranslationTask(appState: appState)
         lastIntegratedVisibleLyricsRefresh = .distantPast
         prepareOverlayContent(appState: appState)
@@ -139,6 +156,7 @@ final class ProviderPipelineController {
         AppTelemetry.performance.info("Provider pipeline load cancelled because live track payload is empty")
         loadTask?.cancel()
         loadTask = nil
+        loadingTrackID = nil
         cancelTranslationTask(appState: appState)
     }
 
@@ -306,6 +324,7 @@ final class ProviderPipelineController {
         AppTelemetry.performance.info("Provider pipeline mock load cancelled")
         loadTask?.cancel()
         loadTask = nil
+        loadingTrackID = nil
         appState.setProviderRuntimeState(.idle)
     }
 

@@ -4,21 +4,41 @@
 
 | Field | Meaning | Bumped by | Example |
 |-------|---------|-----------|---------|
-| `CURRENT_PROJECT_VERSION` | Build number | `script/bump_build.sh` post-merge | 1 → 2 → 3… |
-| `MARKETING_VERSION` | Semantic version | Explicit agent/human decision | 0.1.0, 0.2.0 |
+| `MARKETING_VERSION` | User-facing semantic version | `script/version.sh set-marketing <version>` | 0.3.0, 0.4.0 |
+| `CURRENT_PROJECT_VERSION` | Monotonic build number | `script/version.sh bump-build` | 3, 4, 5 |
+
+The installed app shows both values:
+
+- Finder/App Info version: `MARKETING_VERSION` (`CFBundleShortVersionString`)
+- Build: `CURRENT_PROJECT_VERSION` (`CFBundleVersion`)
+
+So `0.3.0 (3)` means semantic version `0.3.0`, build `3`. It does **not**
+mean version `3.0`.
+
+Use the helper script as the source of truth:
+
+```sh
+script/version.sh show
+script/version.sh installed
+script/version.sh running
+script/release_self.sh --status
+```
 
 ## When to bump what
 
 ```
-PR merged to main  →  bump_build.sh (auto)
-                       CURRENT_PROJECT_VERSION increments
+PR merged to main       -> script/version.sh bump-build
+                           CURRENT_PROJECT_VERSION increments
 
-Feature batch done →  agent bumps MARKETING_VERSION
-                       + creates git tag (e.g. v0.1.0)
-                       + optionally creates GitHub Release
+Feature batch done      -> script/version.sh set-marketing <version>
+                           + commit version bump
+                           + merge
+                           + create matching annotated tag (v<version>)
+                           + optionally create GitHub Release
 
-Breaking change   →  minor version bump (0.1.0 → 0.2.0)
-Experimental       →  no tag, just build number
+Experimental fix/test   -> bump build only
+User-visible feature    -> patch or minor semantic bump
+Compatibility break     -> minor bump while pre-1.0
 ```
 
 ## git tags
@@ -28,8 +48,43 @@ Tags are created for **semantic version milestones**, not every merge:
 - `v0.1.0` — first profileable architecture slice
 - `v0.2.0` — real Apple Music lyrics working
 - `v0.3.0` — translation provider wired
+- `v0.4.0` — next user-visible feature batch, not yet assigned
 
 Build numbers track CI lineage but don't get tags.
+
+Before tagging, assert the tag matches the project:
+
+```sh
+script/version.sh assert-tag-version v0.4.0
+git tag -a v0.4.0 -m "MusicFloat v0.4.0"
+git push origin v0.4.0
+```
+
+## Release app identity
+
+The menu bar can hide which build is running. Before debugging a Release-only
+issue, confirm the active process:
+
+```sh
+script/release_self.sh --status
+pgrep -fl MusicFloat
+```
+
+Expected self-installed Release path:
+
+```text
+/Applications/MusicFloat.app/Contents/MacOS/MusicFloat
+```
+
+Xcode Debug path:
+
+```text
+~/Library/Developer/Xcode/DerivedData/.../Build/Products/Debug/MusicFloat.app/Contents/MacOS/MusicFloat
+```
+
+If the running command points at DerivedData, you are testing Debug, not the
+installed Release app. Use `script/release_self.sh --install --open` to replace
+and launch the self-installed Release bundle.
 
 ## GitHub Releases
 

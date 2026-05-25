@@ -14,16 +14,18 @@ INSTALL_TARGET="/Applications/$APP_NAME.app"
 usage() {
   cat >&2 <<'EOF'
 usage:
-  script/release_self.sh [--install] [--open] [--memory]
+  script/release_self.sh [--install] [--open] [--memory] [--status]
 
 Builds a local Release app bundle into dist/MusicFloat.app with release-strip
 postprocessing enabled. --install copies that bundle to /Applications.
+--status prints the project, installed app, and running process identity.
 EOF
 }
 
 install_app=false
 open_app=false
 sample_memory=false
+show_status=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -37,6 +39,9 @@ while [[ $# -gt 0 ]]; do
       open_app=true
       sample_memory=true
       ;;
+    --status)
+      show_status=true
+      ;;
     -h|--help)
       usage
       exit 0
@@ -49,9 +54,36 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+status() {
+  echo "[project]"
+  script/version.sh show
+  echo "[installed]"
+  script/version.sh installed
+  echo "[running]"
+  script/version.sh running
+}
+
 stop_app() {
   /usr/bin/pkill -x "$APP_NAME" >/dev/null 2>&1 || true
   /usr/bin/killall "$APP_NAME" >/dev/null 2>&1 || true
+  while IFS= read -r pid; do
+    command="$(/bin/ps -o command= -p "$pid" 2>/dev/null || true)"
+    case "$command" in
+      *"/Contents/MacOS/$APP_NAME"*)
+        /bin/kill "$pid" >/dev/null 2>&1 || true
+        ;;
+    esac
+  done < <(/usr/bin/pgrep -f "/Contents/MacOS/$APP_NAME" || true)
+  /bin/sleep 0.2
+  while IFS= read -r pid; do
+    command="$(/bin/ps -o command= -p "$pid" 2>/dev/null || true)"
+    case "$command" in
+      *"/Contents/MacOS/$APP_NAME"*)
+        /bin/kill -9 "$pid" >/dev/null 2>&1 || true
+        ;;
+    esac
+  done < <(/usr/bin/pgrep -f "/Contents/MacOS/$APP_NAME" || true)
+  /bin/sleep 0.2
 }
 
 wait_for_pid() {
@@ -93,6 +125,14 @@ sample_process_memory() {
       print "physical_footprint_peak=" $4
     }'
 }
+
+if [[ "$show_status" == true && "$install_app" == false && "$open_app" == false && "$sample_memory" == false ]]; then
+  status
+  exit 0
+fi
+
+echo "[before]"
+status
 
 stop_app
 
@@ -146,3 +186,6 @@ if [[ "$open_app" == true ]]; then
     sample_process_memory "$pid"
   fi
 fi
+
+echo "[after]"
+status

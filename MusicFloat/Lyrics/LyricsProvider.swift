@@ -132,7 +132,11 @@ final class PublicLyricsProvider: LyricsProvider {
         // tracks and always plain text. Keep this lookup library-only; the AX
         // panel scrape is intentionally the final fallback because traversing
         // Music.app's accessibility tree can briefly stall the UI.
+        let appleScriptStartedAt = Date()
         let appleScriptDoc = await dependencies.fetchAppleScriptLyrics()
+        AppTelemetry.performance.notice(
+            "Lyrics stage AppleScript finished elapsed=\(Date().timeIntervalSince(appleScriptStartedAt), privacy: .public)"
+        )
         if let doc = appleScriptDoc, doc.source == .musicApp {
             if shouldCache(document: doc) {
                 store(doc, for: track.id)
@@ -147,11 +151,18 @@ final class PublicLyricsProvider: LyricsProvider {
         // in Settings.
         if dependencies.isMediaUserTokenConfigured() {
             do {
+                let webStartedAt = Date()
                 if let doc = try await dependencies.fetchAppleMusicWebLyrics(track) {
+                    AppTelemetry.performance.notice(
+                        "Lyrics stage AppleMusicWeb finished elapsed=\(Date().timeIntervalSince(webStartedAt), privacy: .public) result=hit"
+                    )
                     store(doc, for: track.id)
                     AppTelemetry.performance.info("Lyrics hit appleMusicWeb timed=\(doc.isTimed) lines=\(doc.lines.count)")
                     return .available(doc)
                 }
+                AppTelemetry.performance.notice(
+                    "Lyrics stage AppleMusicWeb finished elapsed=\(Date().timeIntervalSince(webStartedAt), privacy: .public) result=miss"
+                )
                 AppTelemetry.performance.info("AM web returned no lyrics")
             } catch is CancellationError {
                 return .unavailable
@@ -171,7 +182,11 @@ final class PublicLyricsProvider: LyricsProvider {
         // we can show a full timed document. Calibration against the Music UI
         // happens later in the refresh tick.
         do {
+            let lrclibStartedAt = Date()
             if let doc = try await dependencies.fetchLRCLIBLyrics(track) {
+                AppTelemetry.performance.notice(
+                    "Lyrics stage LRCLIB finished elapsed=\(Date().timeIntervalSince(lrclibStartedAt), privacy: .public) result=hit"
+                )
                 if doc.isTimed {
                     store(doc, for: track.id)
                     AppTelemetry.performance.info("Lyrics hit lrclib timed=true lines=\(doc.lines.count)")
@@ -188,6 +203,9 @@ final class PublicLyricsProvider: LyricsProvider {
                 store(doc, for: track.id)
                 return .available(doc)
             }
+            AppTelemetry.performance.notice(
+                "Lyrics stage LRCLIB finished elapsed=\(Date().timeIntervalSince(lrclibStartedAt), privacy: .public) result=miss"
+            )
         } catch is CancellationError {
             return .unavailable
         } catch {
