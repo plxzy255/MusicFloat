@@ -60,6 +60,7 @@ enum MusicAppLyricsProvider {
         }
         guard raw.hasPrefix("__LYRICS__\n") else {
             logEmptyResult(raw)
+            markVisibleLyricsFallbackNeeded(for: raw)
             return nil
         }
         let trimmed = raw
@@ -67,6 +68,19 @@ enum MusicAppLyricsProvider {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         return LyricsParser.parsePlain(trimmed, source: .musicApp)
+    }
+
+    private static func markVisibleLyricsFallbackNeeded(for raw: String) {
+        guard raw == "__EMPTY__" || raw.hasPrefix("__ERROR__||") else {
+            return
+        }
+        if hasAccessibilityTrust(prompt: false) {
+            requiresAccessibilityPermission = false
+            shouldRetryVisibleLyrics = true
+        } else {
+            requiresAccessibilityPermission = true
+            shouldRetryVisibleLyrics = false
+        }
     }
 
     /// Returns just the active visible lyric line text, without wrapping it

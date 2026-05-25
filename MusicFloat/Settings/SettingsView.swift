@@ -33,8 +33,12 @@ struct SettingsView: View {
                     AppTelemetry.settings.info("Translation preparation completed")
                 } catch {
                     preparationConfiguration = nil
-                    appState.setTranslationRuntimeState(.failed("Translation preparation failed"))
-                    AppTelemetry.settings.info("Translation preparation failed")
+                    let reason = Self.translationFailureMessage(
+                        prefix: "Translation preparation failed",
+                        error: error
+                    )
+                    appState.setTranslationRuntimeState(.failed(reason))
+                    AppTelemetry.settings.error("Translation preparation failed: \(error.localizedDescription, privacy: .public)")
                 }
             }
         #else
@@ -103,7 +107,7 @@ struct SettingsView: View {
                     }
                 }
 
-                LabeledContent("Provider", value: "Apple on-device")
+                LabeledContent("Provider", value: appState.runtimeFeatureFlags.translationProviderMode.translationProviderDisplayName)
                 LabeledContent("Target", value: appState.preferredTranslationLanguageName)
                 LabeledContent("Source", value: appState.lyricsSourceLanguageName)
                 LabeledContent("Status", value: appState.translationRuntimeState.detailText)
@@ -199,6 +203,14 @@ struct SettingsView: View {
 
     private static func localizedLanguageName(for identifier: String) -> String {
         Locale.current.localizedString(forIdentifier: identifier) ?? identifier
+    }
+
+    private static func translationFailureMessage(prefix: String, error: any Error) -> String {
+        let detail = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !detail.isEmpty else {
+            return prefix
+        }
+        return "\(prefix): \(detail)"
     }
 
     private static func languageList(

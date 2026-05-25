@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 #if ENABLE_APPLE_TRANSLATION
 import NaturalLanguage
 @preconcurrency @unsafe import Translation
@@ -314,8 +315,18 @@ final class AppleTranslationProvider: TranslationProvider {
         } catch is CancellationError {
             return .status(.unavailable(reason: "Translation cancelled"))
         } catch {
-            return .status(.failed("Translation failed"))
+            let reason = Self.failureMessage(for: error)
+            AppTelemetry.performance.error("Apple translation failed: \(error.localizedDescription, privacy: .public)")
+            return .status(.failed(reason))
         }
+    }
+
+    private static func failureMessage(for error: any Error) -> String {
+        let detail = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !detail.isEmpty else {
+            return "Translation failed"
+        }
+        return "Translation failed: \(detail)"
     }
 
     private static func sameLanguageFamily(_ source: Locale.Language, _ target: Locale.Language) -> Bool {

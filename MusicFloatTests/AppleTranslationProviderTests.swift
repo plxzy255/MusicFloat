@@ -140,6 +140,21 @@ final class AppleTranslationProviderTests: XCTestCase {
         )))
     }
 
+    func testTranslationFailureIncludesSanitizedReason() async {
+        struct StubFailure: LocalizedError {
+            var errorDescription: String? { "session unavailable" }
+        }
+
+        let provider = AppleTranslationProvider(dependencies: .init(
+            availability: { _, _ in .installed },
+            translate: { _, _, _ in throw StubFailure() }
+        ))
+
+        let result = await provider.translation(for: document(), targetLanguageIdentifier: "fr")
+
+        XCTAssertEqual(result, .status(.failed("Translation failed: session unavailable")))
+    }
+
     private func document(lines: [LyricLine] = [LyricLine(id: 0, text: "Hello there", startTime: nil)]) -> LyricsDocument {
         LyricsDocument(
             source: .musicApp,
