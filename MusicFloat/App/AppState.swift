@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import OSLog
 import Observation
@@ -209,6 +210,8 @@ final class AppState {
     var translationRuntimeState: TranslationRuntimeState = .idle
     var overlayContentState: OverlayContentState = .ready
     var playerState: PlayerState
+    var nowPlayingArtwork: NSImage?
+    private(set) var nowPlayingArtworkTrackID: String?
     var lyricsDocument: LyricsDocument
     var translation: LyricTranslation
     var runtimeFeatureFlags = RuntimeFeatureFlags.architectureDefault
@@ -393,11 +396,36 @@ final class AppState {
     }
 
     func updatePlayerState(_ playerState: PlayerState) {
+        let previousTrackID = self.playerState.track?.id
         self.playerState = playerState
+        if playerState.track?.id != previousTrackID {
+            nowPlayingArtwork = nil
+            nowPlayingArtworkTrackID = playerState.track?.id
+        }
         // Seed the live tick fields from the authoritative state so
         // the overlay's elapsed reflects it immediately.
         liveElapsedTime = playerState.elapsedTime
         liveElapsedUpdatedAt = playerState.updatedAt
+    }
+
+    func applyNowPlayingArtwork(_ artwork: NSImage?, forTrackID trackID: String?) {
+        guard let trackID else {
+            clearNowPlayingArtwork()
+            return
+        }
+        guard playerState.track?.id == trackID else {
+            AppTelemetry.performance.info("Ignoring stale now-playing artwork for trackID=\(trackID, privacy: .public)")
+            return
+        }
+
+        nowPlayingArtwork = artwork
+        nowPlayingArtworkTrackID = trackID
+        AppTelemetry.performance.info("Now-playing artwork updated available=\(artwork != nil)")
+    }
+
+    func clearNowPlayingArtwork() {
+        nowPlayingArtwork = nil
+        nowPlayingArtworkTrackID = nil
     }
 
     /// High-frequency update — does NOT touch `playerState`, so menu/Settings

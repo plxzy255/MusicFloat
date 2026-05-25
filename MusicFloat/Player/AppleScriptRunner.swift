@@ -20,7 +20,21 @@ enum AppleScriptRunner {
         }.value
     }
 
+    nonisolated static func runDataOffMain(_ source: String) async -> Data? {
+        await Task.detached(priority: .userInitiated) {
+            runDescriptorDataImpl(source)
+        }.value
+    }
+
     nonisolated private static func runStringImpl(_ source: String) -> String? {
+        runDescriptorImpl(source)?.stringValue
+    }
+
+    nonisolated private static func runDescriptorDataImpl(_ source: String) -> Data? {
+        runDescriptorImpl(source)?.rawDescriptorData
+    }
+
+    nonisolated private static func runDescriptorImpl(_ source: String) -> NSAppleEventDescriptor? {
         let script = OSAScript(source: source, language: OSALanguage(forName: "AppleScript"))
         var errorInfo: NSDictionary?
         guard let descriptor = script.executeAndReturnError(&errorInfo) else {
@@ -32,6 +46,14 @@ enum AppleScriptRunner {
             }
             return nil
         }
-        return descriptor.stringValue
+        return descriptor
+    }
+}
+
+private extension NSAppleEventDescriptor {
+    nonisolated var rawDescriptorData: Data? {
+        let payload = data
+        if !payload.isEmpty { return payload }
+        return coerce(toDescriptorType: typeData)?.data
     }
 }
