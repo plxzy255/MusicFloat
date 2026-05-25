@@ -32,6 +32,13 @@ The live-refresh tick in `ProviderPipelineController` recognizes the source of t
 - **LRCLIB calibration**: when LRCLIB returns timed lyrics for a different master than the user is playing, the AX-driven calibration nudges the clock back into agreement using the overlay's effective live elapsed time rather than the sparse now-playing snapshot.
 - **Driven seek/track-change recovery**: live run `20260525-080546Z-live-Direct-Sample-28b81d4` launched `--live --drive-music`, loaded a non-mock Apple Music web document (`line_count=64`), detected a +15s seek via the watchdog, resynced the live clock, handled a next-track event, and detected a later seek correction. The run had `network_timeout_count=0`.
 - **Clean driven live recovery evidence**: snapshot run `20260525-142048Z-live-Direct-Sample-52adb7a` repeated the driven path from a clean temporary worktree. It proved Music.app playback, overlay appearance, provider readiness, one watchdog seek, one resync, one track change, and Apple Music web lyrics after the track change (`line_count=50`, `syllable_count=0`). The live log also showed a line-only Apple Music web path (`timed=false`); visual proof that the overlay never shows fake word-fill still needs a screenshot, video, or UI snapshot.
+- **Plain Apple Music web docs stay sentence-first**: Apple Music web documents
+  now skip AX replacement whether they are timed or plain. Timed TTML keeps the
+  Apple clock; line-only/plain web lyrics keep equal estimated sentence windows
+  instead of being overwritten by a one-line Music.app UI scrape.
+- **AX fallback reacts faster again**: visible-lyrics refresh now checks every
+  0.5s with a 0.75s controller throttle, restoring most of the responsiveness
+  lost when it was moved off the high-frequency live tick.
 - **Mock preview**: architecture defaults stay fully mock; the public Apple provider stack is only selected for live Apple Music mode.
 - **AX active-line detection**: button-height heuristic + viewport filter avoids the prefetch-buttons-far-off-viewport trap and the wrapped-2-line-inactive-lyric trap. Works without Music exposing any state attribute (the AX dump confirmed only the standard skeleton is published).
 
@@ -50,10 +57,10 @@ The live-refresh tick in `ProviderPipelineController` recognizes the source of t
 - **One-line lag on some songs**: even with the TTML doc loaded, the overlay sometimes shows the line just *before* the actual highlight for a beat. Could be the TTML having silent intro padding (some Apple TTML uses `<p begin="00:00.001">` on first vocal but Music's scroll engine doesn't start moving until a few hundred ms later).
 - **Untimed estimate is not true sync**: plain lyrics now move line by line in equal estimated slots, but without provider timing this is still duration-based. It should feel calmer than word-fill, not perfectly match the artist's phrasing.
 - **Smoothness still lacks a hitch trace**: the clean driven sample validates state recovery and non-syllable rendering, but it is still a 30s usage sample. Use SwiftUI, Animation Hitches, or Time Profiler evidence before claiming the overlay is fully jitter-free.
-- **AX overwrite policy for plain Apple Music web docs**: the clean driven log
-  encountered an Apple Music web document with `timed=false`, then visible
-  lyrics refresh also produced `.musicAppUI` fallback hits. Decide whether AX
-  should replace a plain Apple Music web document or only annotate/calibrate it.
+- **AppleScript error detail**: `AppleScript error: nil` was a diagnostics
+  quality problem. AppleScript failures now log number/message fallback details
+  so future live runs can separate harmless Music.app churn from real snapshot
+  failures.
 
 ## Next steps, ranked
 
@@ -63,11 +70,7 @@ The live-refresh tick in `ProviderPipelineController` recognizes the source of t
    - Loosen search picker: accept duration ±3s by default and match on normalized-title containment when exact equality misses.
    - If AppleScript URL is missing, try `cloud universal id` from AppleScript and look up `/v1/catalog/{sf}/songs?filter[equivalents]={id}`.
 4. **Storefront language preference** — keep the original-language TTML default explicit. Add a visible setting only if live examples prove users need transliterated/localized lyrics.
-5. **Clarify AX overwrite policy** — plain Apple Music web lyrics should remain
-   sentence-first; decide whether visible AX fallback may replace them, or
-   whether AX should only replace true `.musicAppUI` docs and calibrate timed
-   LRCLIB docs.
-6. **Switch the AX fallback to a "translation only" role** — once the web path is reliable, the AX scrape is purely for AppleScript-library tracks that have no catalog ID. Could degrade gracefully without showing it at all when fallback is off.
+5. **Switch the AX fallback to a "translation only" role** — once the web path is reliable, the AX scrape is purely for AppleScript-library tracks that have no catalog ID. Could degrade gracefully without showing it at all when fallback is off.
 
 ## Parked
 

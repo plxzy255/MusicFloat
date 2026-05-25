@@ -28,7 +28,7 @@ enum AppleScriptRunner {
         var errorInfo: NSDictionary?
         guard let descriptor = unsafe script.executeAndReturnError(&errorInfo) else {
             if let errorInfo {
-                let message = String(describing: errorInfo[OSAScriptErrorMessageKey])
+                let message = appleScriptErrorMessage(errorInfo)
                 Task { @MainActor in
                     AppTelemetry.performance.error("AppleScript error: \(message, privacy: .public)")
                 }
@@ -105,11 +105,25 @@ private actor AppleScriptExecutor {
     }
 
     private func logScriptError(_ errorInfo: NSDictionary) {
-        let message = String(describing: errorInfo[OSAScriptErrorMessageKey])
+        let message = appleScriptErrorMessage(errorInfo)
         Task { @MainActor in
             AppTelemetry.performance.error("AppleScript error: \(message, privacy: .public)")
         }
     }
+}
+
+private nonisolated func appleScriptErrorMessage(_ errorInfo: NSDictionary) -> String {
+    let message = (errorInfo[OSAScriptErrorMessageKey] as? String)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    let number = errorInfo[OSAScriptErrorNumberKey].map { String(describing: $0) } ?? "unknown"
+    if let message, !message.isEmpty {
+        return "number=\(number) message=\(message)"
+    }
+    let keys = errorInfo.allKeys
+        .map { String(describing: $0) }
+        .sorted()
+        .joined(separator: ",")
+    return "number=\(number) message=unavailable keys=\(keys)"
 }
 
 private extension NSAppleEventDescriptor {

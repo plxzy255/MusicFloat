@@ -6,7 +6,7 @@ final class ProviderPipelineController {
     /// Backstop poll cadence in case the AX observer doesn't fire (Music not
     /// running yet, panel closed, observer attach failed). Push notifications
     /// from `MusicAppAXObserver` drive the common case at ~event latency.
-    private static let integratedVisibleLyricsRefreshInterval: TimeInterval = 2.0
+    private static let integratedVisibleLyricsRefreshInterval: TimeInterval = 0.75
     /// Cooldown after an AX-observer-driven refresh, so a burst of
     /// notifications doesn't translate into a burst of full AX traversals.
     private static let observerDrivenCooldown: TimeInterval = 0.5
@@ -182,9 +182,10 @@ final class ProviderPipelineController {
 
         let current = appState.lyricsDocument
         if Self.skipsIntegratedVisibleLyricsRefresh(for: current) {
-            // Authoritative timed document straight from Apple. Do not
-            // overwrite with a lagging AX scrape and do not calibrate —
-            // the TTML clock IS ground truth here.
+            // Authoritative document straight from Apple. Timed TTML is clock
+            // ground truth; line-only/plain Apple documents should stay
+            // sentence-first instead of being replaced by a jittery one-line
+            // AX scrape.
             axObserver.stop()
             observedAppState = nil
             return
@@ -329,7 +330,7 @@ final class ProviderPipelineController {
     }
 
     static func skipsIntegratedVisibleLyricsRefresh(for document: LyricsDocument) -> Bool {
-        document.source == .appleMusicWeb && document.isTimed
+        document.source == .appleMusicWeb
     }
 
     private static func normalizeForMatch(_ value: String) -> String {

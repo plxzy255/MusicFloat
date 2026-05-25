@@ -37,7 +37,7 @@ private final class MusicFloatAppController {
     private let statusItemController: MenuBarStatusItemController
     private let settingsWindowController: SettingsWindowController
     private var liveVisibleLyricsRefreshTask: Task<Void, Never>?
-    private static let liveVisibleLyricsRefreshInterval: TimeInterval = 2.0
+    private static let liveVisibleLyricsRefreshInterval: TimeInterval = 0.5
 
     init() {
         appState = AppState()

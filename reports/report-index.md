@@ -128,5 +128,11 @@ Use this index to route durable findings without opening every report.
 - `script/profile.sh` timeout summarization now excludes AppleEvent timeout
   parameters such as `timeout 7200`; the clean live row records no real
   network/request timeout failures.
+- PR #18 follow-up: Apple Music web lyrics now skip AX replacement for both
+  timed and plain documents, preserving sentence-first behavior for line-only
+  lyrics. The visible-lyrics fallback loop now checks every 0.5s with a 0.75s
+  provider throttle, reducing the start/line-change delay introduced by the 2s
+  side loop. AppleScript diagnostics now report fallback error details instead
+  of `AppleScript error: nil`.
 - Remaining non-sandbox items: capture an actual timeout if it recurs and keep
   seek/scrub monitoring fresh on future playback-clock changes.

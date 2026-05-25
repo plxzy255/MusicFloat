@@ -66,14 +66,23 @@ final class ProviderPipelineControllerTests: XCTestCase {
         XCTAssertEqual(lyricsProvider.requestedTrackIDs, [])
     }
 
-    func testAppleMusicWebTimedDocumentSkipsAXRefreshAndCalibration() {
+    func testAppleMusicWebDocumentsSkipAXRefreshAndCalibration() {
         let document = LyricsDocument(
             source: .appleMusicWeb,
             lines: [LyricLine(id: 0, text: "Ground truth", startTime: 10)],
             isTimed: true
         )
+        let plainDocument = LyricsDocument(
+            source: .appleMusicWeb,
+            lines: [
+                LyricLine(id: 0, text: "First sentence", startTime: nil),
+                LyricLine(id: 1, text: "Second sentence", startTime: nil)
+            ],
+            isTimed: false
+        )
 
         XCTAssertTrue(ProviderPipelineController.skipsIntegratedVisibleLyricsRefresh(for: document))
+        XCTAssertTrue(ProviderPipelineController.skipsIntegratedVisibleLyricsRefresh(for: plainDocument))
     }
 
     func testIntegratedVisibleLyricsMissesBackOffAXRefreshCadence() {
