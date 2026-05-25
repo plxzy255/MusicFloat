@@ -151,7 +151,19 @@ sample_process_memory() {
   sample_file="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/musicfloat-release-memory.XXXXXX")"
 
   while [[ "$sample_count" -lt "$duration" ]]; do
-    /bin/ps -o pid=,rss=,vsz=,command= -p "$pid" | /usr/bin/awk \
+    if ! /bin/kill -0 "$pid" 2>/dev/null; then
+      echo "memory_sample_stopped pid=$pid reason=process_exited sample=$((sample_count + 1))"
+      break
+    fi
+
+    local ps_output
+    ps_output="$(/bin/ps -o pid=,rss=,vsz=,command= -p "$pid" 2>/dev/null || true)"
+    if [[ -z "$ps_output" ]]; then
+      echo "memory_sample_stopped pid=$pid reason=process_unavailable sample=$((sample_count + 1))"
+      break
+    fi
+
+    printf '%s\n' "$ps_output" | /usr/bin/awk \
       -v sample="$((sample_count + 1))" \
       -v sample_file="$sample_file" '
       {
@@ -179,7 +191,14 @@ sample_process_memory() {
     }' "$sample_file"
   /bin/rm -f "$sample_file"
 
-  /usr/bin/vmmap -summary "$pid" 2>/dev/null | /usr/bin/awk '
+  local vmmap_output
+  vmmap_output="$(/usr/bin/vmmap -summary "$pid" 2>/dev/null || true)"
+  if [[ -z "$vmmap_output" ]]; then
+    echo "vmmap_summary_unavailable pid=$pid"
+    return 0
+  fi
+
+  printf '%s\n' "$vmmap_output" | /usr/bin/awk '
     /Physical footprint:/ {
       print "physical_footprint=" $3
     }

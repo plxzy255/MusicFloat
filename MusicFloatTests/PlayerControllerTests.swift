@@ -181,6 +181,7 @@ final class PlayerControllerTests: XCTestCase {
             }
             await Task.yield()
         }
+        XCTFail("Timed out waiting for bridge.currentState() to be called")
     }
 }
 

@@ -220,7 +220,7 @@ final class PlayerController {
                 guard let previousTrackID else { return false }
                 return state.track?.id == previousTrackID
             case .seek(let position):
-                guard state.track?.id == previousTrackID else { return false }
+                guard let previousTrackID, state.track?.id == previousTrackID else { return false }
                 return abs(state.elapsedTime - position) > 0.35
             case .playPause, .setVolume:
                 return false
