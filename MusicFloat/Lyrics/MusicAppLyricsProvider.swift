@@ -21,6 +21,8 @@ enum MusicAppLyricsProvider {
     /// live button feel frozen on real Music.app trees.
     private static let axDumpEnabled = false
     private static var pendingAXDump = axDumpEnabled
+    private static let axTraversalNodeLimit = 700
+    private static let axTraversalTimeLimit: TimeInterval = 0.08
 
     private static let script = """
     try
@@ -115,20 +117,27 @@ enum MusicAppLyricsProvider {
         let root = AXUIElementCreateApplication(app.processIdentifier)
         var lines: [VisibleLyricLine] = []
         var containerFrame: CGRect? = nil
+        var traversalBudget = AXTraversalBudget(
+            nodeLimit: axTraversalNodeLimit,
+            timeLimit: axTraversalTimeLimit
+        )
         collectVisibleLyricLines(
             from: root,
             inLyricsContainer: false,
             containerFrame: &containerFrame,
             into: &lines,
-            depth: 0
+            depth: 0,
+            budget: &traversalBudget
         )
 
         let viable = lines.filter {
             $0.size.height > 0 && !$0.text.hasPrefix("Written By:")
         }
         guard !viable.isEmpty else {
-            shouldRetryVisibleLyrics = true
-            AppTelemetry.performance.info("Music.app AX lyrics panel had no visible lyric line")
+            shouldRetryVisibleLyrics = !traversalBudget.isExhausted
+            AppTelemetry.performance.info(
+                "Music.app AX lyrics panel had no visible lyric line limited=\(traversalBudget.isExhausted, privacy: .public) visited=\(traversalBudget.visitedNodes, privacy: .public) elapsed=\(traversalBudget.elapsed, privacy: .public)"
+            )
             return nil
         }
 
@@ -266,14 +275,37 @@ enum MusicAppLyricsProvider {
         let fontSize: CGFloat?
     }
 
+    private struct AXTraversalBudget {
+        let nodeLimit: Int
+        let timeLimit: TimeInterval
+        let startedAt = Date()
+        private(set) var visitedNodes = 0
+        private(set) var isExhausted = false
+
+        var elapsed: TimeInterval {
+            Date().timeIntervalSince(startedAt)
+        }
+
+        mutating func visit() -> Bool {
+            guard !isExhausted else { return false }
+            visitedNodes += 1
+            if visitedNodes > nodeLimit || elapsed > timeLimit {
+                isExhausted = true
+                return false
+            }
+            return true
+        }
+    }
+
     private static func collectVisibleLyricLines(
         from element: AXUIElement,
         inLyricsContainer: Bool,
         containerFrame: inout CGRect?,
         into lines: inout [VisibleLyricLine],
-        depth: Int
+        depth: Int,
+        budget: inout AXTraversalBudget
     ) {
-        guard depth <= 20 else { return }
+        guard depth <= 20, budget.visit() else { return }
 
         let role = stringAttribute(element, kAXRoleAttribute as CFString) ?? ""
         let title = stringAttribute(element, kAXTitleAttribute as CFString) ?? ""
@@ -321,12 +353,14 @@ enum MusicAppLyricsProvider {
         }
 
         for child in elementChildren(element) {
+            guard !budget.isExhausted else { return }
             collectVisibleLyricLines(
                 from: child,
                 inLyricsContainer: isLyricsContainer,
                 containerFrame: &containerFrame,
                 into: &lines,
-                depth: depth + 1
+                depth: depth + 1,
+                budget: &budget
             )
         }
     }
