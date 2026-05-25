@@ -1,5 +1,5 @@
 import AppKit
-import os
+import OSLog
 import SwiftUI
 
 @MainActor

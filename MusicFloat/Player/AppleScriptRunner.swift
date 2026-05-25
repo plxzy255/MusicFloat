@@ -20,6 +20,7 @@ enum AppleScriptRunner {
         }.value
     }
 
+    /// Runs `source` off the main actor and returns raw Apple event descriptor bytes.
     nonisolated static func runDataOffMain(_ source: String) async -> Data? {
         await Task.detached(priority: .userInitiated) {
             runDescriptorDataImpl(source)

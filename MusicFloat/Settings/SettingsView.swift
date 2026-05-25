@@ -57,6 +57,7 @@ struct SettingsView: View {
                     onTranslationPreparationCompleted()
                 } catch is CancellationError {
                     preparationConfiguration = nil
+                    appState.setTranslationRuntimeState(.idle)
                     AppTelemetry.settings.info("Translation preparation cancelled")
                 } catch {
                     preparationConfiguration = nil

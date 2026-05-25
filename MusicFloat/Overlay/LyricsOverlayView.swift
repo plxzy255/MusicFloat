@@ -151,6 +151,7 @@ struct LyricsOverlayView: View {
         } catch is CancellationError {
             preparationConfiguration = nil
             activePreparationIdentifier = nil
+            appState.setTranslationRuntimeState(.idle)
             AppTelemetry.windowing.info("Overlay translation preparation cancelled")
         } catch {
             preparationConfiguration = nil

@@ -105,6 +105,14 @@ struct TranslationResponsePayload: Equatable, Sendable {
     let text: String
 }
 
+fileprivate func normalizedTranslationComparableText(_ text: String) -> String {
+    text
+        .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+        .components(separatedBy: .whitespacesAndNewlines)
+        .joined()
+        .trimmingCharacters(in: .punctuationCharacters)
+}
+
 @MainActor
 protocol TranslationProvider {
     var displayName: String { get }
@@ -294,7 +302,8 @@ final class AppleTranslationProvider: TranslationProvider {
                     let text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !text.isEmpty else { return false }
                     guard let source = sourceByID[response.lineID] else { return false }
-                    return !Self.normalizedText(text).elementsEqual(Self.normalizedText(source))
+                    return !normalizedTranslationComparableText(text)
+                        .elementsEqual(normalizedTranslationComparableText(source))
                 }
                 .sorted { $0.lineID < $1.lineID }
                 .enumerated()
@@ -370,13 +379,6 @@ final class AppleTranslationProvider: TranslationProvider {
         #endif
     }
 
-    private static func normalizedText(_ text: String) -> String {
-        text
-            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
-            .components(separatedBy: .whitespacesAndNewlines)
-            .joined()
-            .trimmingCharacters(in: .punctuationCharacters)
-    }
 }
 
 #if ENABLE_APPLE_TRANSLATION
@@ -411,7 +413,8 @@ enum PreparedTranslationSessionTranslator {
                 }
                 let text = response.targetText.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty,
-                      !normalizedText(text).elementsEqual(normalizedText(source)) else {
+                      !normalizedTranslationComparableText(text)
+                        .elementsEqual(normalizedTranslationComparableText(source)) else {
                     return nil
                 }
                 return (lineID, response.sourceLanguage.minimalIdentifier, text)
@@ -430,13 +433,6 @@ enum PreparedTranslationSessionTranslator {
         )
     }
 
-    private static func normalizedText(_ text: String) -> String {
-        text
-            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
-            .components(separatedBy: .whitespacesAndNewlines)
-            .joined()
-            .trimmingCharacters(in: .punctuationCharacters)
-    }
 }
 #endif
 
