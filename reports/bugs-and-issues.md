@@ -77,8 +77,8 @@ the status as fixes land or evidence changes.
 - Changes:
   - Successful translations now cache through `EphemeralMediaCache` as bounded
     JSON data keyed by provider/document/target fields.
-  - Translation cache keys use a one-process hash and do not expose raw lyric
-    text in key strings or logs.
+  - Translation cache keys use bounded SHA-256 redacted key strings and do not
+    expose raw lyric text in key strings or logs.
   - Live artwork refresh now caches downsampled artwork bytes through the same
     bounded cache using privacy-safe hashed track keys.
   - `script/profile.sh --apple-translation` creates an explicit

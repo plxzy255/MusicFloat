@@ -65,6 +65,12 @@ Use this index to route durable findings without opening every report.
   payloads, Settings shows memory/disk usage, and Settings can clear memory plus
   disk cache state. Disk filenames and the index use hashed keys, not raw track
   or lyric lookup keys.
+- Translation cache review follow-up: runtime translation keys are bounded
+  SHA-256 redacted strings, not unbounded lyric text keys, and memory/disk cache
+  policy uses LRU, TTL, entry-count, total-cost, and object-cost limits.
+- Visible lyrics refresh review follow-up: the 0.5s/0.75s refresh cadence is
+  documented as a monitoring item in `reports/performance-flaws.md`; do not call
+  its CPU impact proven until a same-mode live pair exists.
 - Driven live run `20260525-080546Z-live-Direct-Sample-28b81d4` proved
   live Music.app playback, overlay appearance, non-mock Apple Music web lyrics,
   provider readiness, seek/track-change handling, and zero timeout lines. The

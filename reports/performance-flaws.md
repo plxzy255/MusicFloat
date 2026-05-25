@@ -63,6 +63,24 @@ Keep raw traces out of git; cite run IDs from `reports/performance-runs.jsonl`.
   trace-size reporting in run entries.
 - Next check: confirm trace sizes stay bounded after a full live phased run.
 
+### PERF-007: Faster visible-lyrics refresh needs same-mode CPU proof
+
+- Status: monitoring
+- First seen: PR #18 follow-up review
+- Signal: visible lyrics refresh moved from a 2s side loop to a 0.5s app loop
+  with a 0.75s provider throttle to reduce delayed lyric starts, but AX
+  traversal can be expensive when Apple Music web and LRCLIB miss.
+- Affected modes: live overlay with visible Music.app lyrics fallback.
+- Current mitigation: Apple Music web documents skip AX replacement, AX
+  observer-driven refreshes keep the 0.5s cooldown, and repeated visible-line
+  misses back off to 1.25s.
+- Evidence gap: no clean same-mode baseline/candidate CPU pair isolates this
+  refresh-cadence change yet. Do not claim it is free or regressed without run
+  IDs, usage CSVs, and live logs from matching live scenarios.
+- Next check: collect a clean `--live --drive-music --scenario
+  apple-music-driven-karaoke` pair, or add an isolated AX-miss scenario if a
+  track/provider miss reliably reproduces the expensive path.
+
 ## Resolved
 
 ### PERF-006: Live AppleScript polling repeatedly recompiles scripts

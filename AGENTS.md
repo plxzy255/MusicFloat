@@ -14,6 +14,21 @@ MusicFloat is a native macOS menu bar app for floating, translated music lyrics.
 - Performance and regression claims require evidence: run IDs, traces, logs,
   and same-mode comparisons.
 
+## Getting Started With Codex Agents
+
+- Start in single-agent mode: read this file, inspect the smallest relevant
+  tracker, and make the narrow change.
+- Open `.codex/agents/codex-workflow-router.md` only when the task is broad,
+  ambiguous, explicitly asks for agents, or spans independent risk zones.
+- Open one specialist spec at a time, only after the router or task points to
+  it. Shared rules live here; specialist specs should stay domain-specific.
+- If subagents are in flight, treat the current branch as lead-owned. Sidecars
+  may write only an exact disjoint scope; otherwise they return findings for
+  the lead to integrate.
+- The lead rechecks `git status` and the diff before integrating any handoff.
+  If two agents touched the same file or command lane, pause writes and resolve
+  the conflict in the lead thread before continuing.
+
 ## Product Direction
 
 - Build a no-Dock menu bar app with a lightweight floating lyrics overlay.
@@ -160,25 +175,21 @@ When handing work to a subagent, include:
 
 Available repo-local agent specs:
 
-- `.codex/agents/codex-workflow-router.md`: delegation and safety routing.
-- `.codex/agents/performance-profiler.md`: performance evidence and regression
-  comparison.
-- `.codex/agents/build-test-triage.md`: compiler, test, CI, and Xcode warning
-  failures.
-- `.codex/agents/live-lyrics-forensics.md`: live Apple Music lyrics behavior.
-- `.codex/agents/privacy-entitlements-reviewer.md`: logs, privacy, sandbox, and
-  entitlements.
-- `.codex/agents/translation-memory-gatekeeper.md`: Translation framework memory
-  and privacy boundaries.
-- `.codex/agents/native-panel-auditor.md`: native overlay/menu bar behavior.
-- `.codex/agents/release-identity-doctor.md`: Debug/Release/dist/installed
-  bundle identity.
-- `.codex/agents/provider-cache-boundary-auditor.md`: provider cache, retry,
-  timeout, and cancellation behavior.
-- `.codex/agents/report-curator.md`: durable tracker/report updates.
-- `.codex/agents/codex-xcode-doctor.md`: Codex/Xcode/MCP tool affordances.
-- `.codex/agents/parser-fixture-curator.md`: TTML/LRC/parser fixture coverage.
-- `.codex/agents/musicfloat-agent-check.md`: final handoff verification and report coherence.
+| Spec | Use for |
+| --- | --- |
+| `.codex/agents/codex-workflow-router.md` | Delegation and safety routing. |
+| `.codex/agents/performance-profiler.md` | Performance evidence and regression comparison. |
+| `.codex/agents/build-test-triage.md` | Compiler, test, CI, and Xcode warning failures. |
+| `.codex/agents/live-lyrics-forensics.md` | Live Apple Music lyrics behavior. |
+| `.codex/agents/privacy-entitlements-reviewer.md` | Logs, privacy, sandbox, and entitlements. |
+| `.codex/agents/translation-memory-gatekeeper.md` | Translation framework memory and privacy boundaries. |
+| `.codex/agents/native-panel-auditor.md` | Native overlay/menu bar behavior. |
+| `.codex/agents/release-identity-doctor.md` | Debug/Release/dist/installed bundle identity. |
+| `.codex/agents/provider-cache-boundary-auditor.md` | Provider cache, retry, timeout, and cancellation behavior. |
+| `.codex/agents/report-curator.md` | Durable tracker/report updates. |
+| `.codex/agents/codex-xcode-doctor.md` | Codex/Xcode/MCP tool affordances. |
+| `.codex/agents/parser-fixture-curator.md` | TTML/LRC/parser fixture coverage. |
+| `.codex/agents/musicfloat-agent-check.md` | Final handoff verification and report coherence. |
 
 XcodeBuildMCP is repo-configured in `.xcodebuildmcp/config.yaml` for the
 macOS-first MusicFloat surface: `macos`, `project-discovery`, `coverage`,
@@ -203,7 +214,7 @@ Use categories consistently:
 - `Settings`
 - `Performance`
 
-Log stable, high-signal events: app launch, menu actions, panel creation/show/hide, settings appearance, future provider milestones, cache eviction, and fallback paths. Do not log secrets, tokens, raw lyrics from real providers, or personal listening history beyond coarse public-safe state.
+Log stable, high-signal events: app launch, menu actions, panel creation/show/hide, settings appearance, future provider milestones, cache eviction, and fallback paths. Keep telemetry concise: prefer counts, provider/source names, privacy-safe lookup IDs, and broad error classes over raw text, raw line payloads, track titles, artist names, or repeated per-line details. Do not log secrets, tokens, raw lyrics from real providers, or personal listening history beyond coarse public-safe state.
 
 Use `AppTelemetry.measure` for short performance spans that should show up as signposts in Instruments, especially panel creation/show/hide, provider calls, lyric sync ticks, cache reads, translation requests, and startup work. Keep signposts coarse; they are for finding shape, not narrating every line of code.
 

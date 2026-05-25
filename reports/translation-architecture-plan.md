@@ -153,12 +153,17 @@ Do not log or store more than the overlay needs. Avoid raw provider payload arch
 Current implementation status: successful `LyricTranslation` values are
 `Codable` and cached in the shared media cache as JSON data. Runtime cache keys
 include provider identifier, normalized target language, lyrics source, timing
-shape, source language, line IDs, line text, and syllable timing inside a
-one-process hash; the resulting key string does not expose raw lyrics.
+shape, source language, line IDs, line text, and syllable timing, then collapse
+that material into a bounded SHA-256 redacted key string. The cache key does not
+grow with song length and does not expose raw lyrics.
 The app now uses `DiskBackedMediaCache` so translation payloads can persist only
-when the user enables the Disk cache setting. Disk filenames and the index use
-hashed lookup keys, and Settings exposes usage plus Clear Cache. Raw lyrics
-remain excluded from disk persistence until that policy is separately approved.
+when the user enables the Disk cache setting. Memory entries are bounded by the
+shared LRU/TTL `MediaCachePolicy` (`maxEntries`, `maxTotalCost`, and
+translation TTL), while disk entries are additionally bounded by entry count,
+total cost, object cost, TTL, and opt-in persisted namespaces. Disk filenames
+and the index use hashed lookup keys, and Settings exposes usage plus Clear
+Cache. Raw lyrics remain excluded from disk persistence until that policy is
+separately approved.
 
 ## Privacy And Entitlements
 

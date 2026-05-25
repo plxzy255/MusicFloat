@@ -20,7 +20,9 @@ Missing Accessibility permission no longer blocks non-AX providers: canonical Ap
 
 The live-refresh tick in `ProviderPipelineController` recognizes the source of the current document and will:
 
-- Skip everything for `.appleMusicWeb` timed docs (authoritative, no AX overlay).
+- Skip everything for `.appleMusicWeb` docs, timed or plain (authoritative
+  Apple document, no AX replacement). Provider-level LRCLIB/AX fallback still
+  runs when Apple Music web returns no document at all.
 - Run text-match calibration for `.lrclib` timed docs (matches AX active-line text against the LRC document, nudges `offsetCorrection`, ±10s safety clamp).
 - Replace `.musicAppUI` docs in place when the AX scrape returns new text.
 
@@ -56,6 +58,10 @@ The live-refresh tick in `ProviderPipelineController` recognizes the source of t
   before calling the language issue closed.
 - **One-line lag on some songs**: even with the TTML doc loaded, the overlay sometimes shows the line just *before* the actual highlight for a beat. Could be the TTML having silent intro padding (some Apple TTML uses `<p begin="00:00.001">` on first vocal but Music's scroll engine doesn't start moving until a few hundred ms later).
 - **Untimed estimate is not true sync**: plain lyrics now move line by line in equal estimated slots, but without provider timing this is still duration-based. It should feel calmer than word-fill, not perfectly match the artist's phrasing.
+- **Plain Apple document completeness**: once Apple Music web returns any
+  document, the overlay preserves it instead of replacing it with AX. If a
+  future live case proves Apple returned a partial plain document, add an
+  explicit completeness heuristic before allowing fallback replacement.
 - **Smoothness still lacks a hitch trace**: the clean driven sample validates state recovery and non-syllable rendering, but it is still a 30s usage sample. Use SwiftUI, Animation Hitches, or Time Profiler evidence before claiming the overlay is fully jitter-free.
 - **AppleScript error detail**: `AppleScript error: nil` was a diagnostics
   quality problem. AppleScript failures now log number/message fallback details

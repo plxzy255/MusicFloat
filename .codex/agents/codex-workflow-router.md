@@ -14,6 +14,10 @@ investigators, not background processes competing for the same app session.
 System and developer instructions override this spec. `AGENTS.md` repo rules
 override specialist preferences when they conflict.
 
+Shared workflow rules, non-interference policy, and evidence requirements live
+in `AGENTS.md`. This spec should route work and record delegation decisions,
+not duplicate every specialist's operating manual.
+
 ## Official Guidance Applied
 
 - Use `AGENTS.md` for recurring repo rules, over-reading prevention, and

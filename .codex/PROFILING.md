@@ -22,6 +22,14 @@ Use the same mode on both branches when comparing performance:
 - Do not treat `v0.0.3 --demo` vs a modern `--live` trace as regression
   evidence. That compares different subsystems.
 
+Translation is a separate build lane. Default Release/profile builds do not
+compile `ENABLE_APPLE_TRANSLATION` or link Translation/NaturalLanguage. The
+lane is enabled only with `script/profile.sh --apple-translation`,
+`--translation-enabled`, or `ENABLE_APPLE_TRANSLATION_BUILD=1`; the build script
+then appends `$(inherited) ENABLE_APPLE_TRANSLATION`. Ledger rows record this
+as `app.apple_translation_build=true`, and strict comparisons must reject mixed
+default-vs-translation lanes.
+
 ## Live Profiling Requirements
 
 `./script/profile.sh ... --live` now refuses to proceed unless Music.app is
