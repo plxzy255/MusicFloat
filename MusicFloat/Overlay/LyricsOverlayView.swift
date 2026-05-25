@@ -131,9 +131,11 @@ struct LyricsOverlayView: View {
                 targetLanguageIdentifier: targetLanguageIdentifier
             ) {
                 guard appState.playerState.track?.id == activeTrackID,
-                      appState.lyricsDocument == document,
+                      appState.lyricsDocument.hasSameTranslationContent(as: document),
                       appState.preferredTranslationLanguageIdentifier == targetLanguageIdentifier else {
                     AppTelemetry.windowing.notice("Prepared translation ignored because live context changed")
+                    appState.setTranslationRuntimeState(.idle)
+                    onTranslationPreparationCompleted()
                     return
                 }
                 appState.applyTranslation(translation)
@@ -146,6 +148,10 @@ struct LyricsOverlayView: View {
 
             appState.setTranslationRuntimeState(.idle)
             onTranslationPreparationCompleted()
+        } catch is CancellationError {
+            preparationConfiguration = nil
+            activePreparationIdentifier = nil
+            AppTelemetry.windowing.info("Overlay translation preparation cancelled")
         } catch {
             preparationConfiguration = nil
             activePreparationIdentifier = nil

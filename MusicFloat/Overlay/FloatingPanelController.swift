@@ -17,6 +17,11 @@ final class FloatingPanelController {
                 onTranslationPreparationCompleted: onTranslationPreparationCompleted
             )
             self.panel = panel
+            updateContent(
+                appState: appState,
+                onTranslationPreparationCompleted: onTranslationPreparationCompleted,
+                in: panel
+            )
             applySize(appState: appState, to: panel)
 
             AppTelemetry.windowing.info("Show floating panel created=\(didCreatePanel)")
@@ -42,6 +47,18 @@ final class FloatingPanelController {
         let panelSize = NSSize(width: appState.overlayWidthPreset.width, height: 172)
         panel.setContentSize(panelSize)
         panel.contentView?.frame = NSRect(origin: .zero, size: panelSize)
+    }
+
+    private func updateContent(
+        appState: AppState,
+        onTranslationPreparationCompleted: @escaping () -> Void,
+        in panel: NSPanel
+    ) {
+        guard let hostingView = panel.contentView as? NSHostingView<LyricsOverlayView> else { return }
+        hostingView.rootView = LyricsOverlayView(
+            appState: appState,
+            onTranslationPreparationCompleted: onTranslationPreparationCompleted
+        )
     }
 
     private func makePanel(

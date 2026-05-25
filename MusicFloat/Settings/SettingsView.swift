@@ -40,9 +40,11 @@ struct SettingsView: View {
                         targetLanguageIdentifier: targetLanguageIdentifier
                     ) {
                         guard appState.playerState.track?.id == activeTrackID,
-                              appState.lyricsDocument == document,
+                              appState.lyricsDocument.hasSameTranslationContent(as: document),
                               appState.preferredTranslationLanguageIdentifier == targetLanguageIdentifier else {
                             AppTelemetry.settings.info("Prepared translation ignored because live context changed")
+                            appState.setTranslationRuntimeState(.idle)
+                            onTranslationPreparationCompleted()
                             return
                         }
                         appState.applyTranslation(translation)
@@ -53,6 +55,9 @@ struct SettingsView: View {
 
                     appState.setTranslationRuntimeState(.idle)
                     onTranslationPreparationCompleted()
+                } catch is CancellationError {
+                    preparationConfiguration = nil
+                    AppTelemetry.settings.info("Translation preparation cancelled")
                 } catch {
                     preparationConfiguration = nil
                     let reason = Self.translationFailureMessage(

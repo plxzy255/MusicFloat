@@ -3,6 +3,8 @@ import OSLog
 #if ENABLE_APPLE_TRANSLATION
 import NaturalLanguage
 @preconcurrency @unsafe import Translation
+
+extension TranslationSession.Request: @unchecked @retroactive Sendable {}
 #endif
 
 struct TranslatedLyricLine: Equatable, Identifiable, Sendable {
@@ -392,21 +394,29 @@ enum PreparedTranslationSessionTranslator {
         }
         guard !requests.isEmpty else { return nil }
 
-        var translatedLines: [(lineID: LyricLine.ID, sourceLanguageIdentifier: String, text: String)] = []
-        for request in requests {
-            let response = try await session.translate(request.text)
-            let text = response.targetText.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty,
-               !normalizedText(text).elementsEqual(normalizedText(request.text)) {
-                translatedLines.append((
-                    lineID: request.lineID,
-                    sourceLanguageIdentifier: response.sourceLanguage.minimalIdentifier,
-                    text: text
-                ))
-            }
+        let batch = requests.map { request in
+            TranslationSession.Request(
+                sourceText: request.text,
+                clientIdentifier: String(request.lineID)
+            )
         }
-
-        translatedLines = translatedLines.sorted { $0.lineID < $1.lineID }
+        let responses = try await session.translations(from: batch)
+        let sourceByID = Dictionary(uniqueKeysWithValues: requests)
+        let translatedLines = responses
+            .compactMap { response -> (lineID: LyricLine.ID, sourceLanguageIdentifier: String, text: String)? in
+                guard let clientIdentifier = response.clientIdentifier,
+                      let lineID = Int(clientIdentifier),
+                      let source = sourceByID[lineID] else {
+                    return nil
+                }
+                let text = response.targetText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty,
+                      !normalizedText(text).elementsEqual(normalizedText(source)) else {
+                    return nil
+                }
+                return (lineID, response.sourceLanguage.minimalIdentifier, text)
+            }
+            .sorted { $0.lineID < $1.lineID }
         guard !translatedLines.isEmpty else { return nil }
 
         return LyricTranslation(

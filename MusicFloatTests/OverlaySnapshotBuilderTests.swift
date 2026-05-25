@@ -43,7 +43,7 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
         XCTAssertEqual(snapshot.contentState, .ready)
         XCTAssertEqual(snapshot.lyricText, "Translation follows, soft and native")
         XCTAssertEqual(snapshot.translationText, "La traduction suit, douce et native")
-        XCTAssertEqual(snapshot.attributionText, "Mock lyrics - English to French")
+        XCTAssertEqual(snapshot.attributionText, "Mock lyrics - \(languageName("en")) to \(languageName("fr"))")
         XCTAssertEqual(snapshot.widthPreset, .medium)
     }
 
@@ -83,7 +83,7 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
             widthPreset: .medium
         )
 
-        XCTAssertEqual(snapshot.attributionText, "Apple Music - Russian to English")
+        XCTAssertEqual(snapshot.attributionText, "Apple Music - \(languageName("ru")) to \(languageName("en"))")
     }
 
     @MainActor
@@ -232,5 +232,9 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
         var state = MockMusicAppBridge.previewState
         state.elapsedTime = elapsedTime
         return state
+    }
+
+    private func languageName(_ identifier: String) -> String {
+        Locale.current.localizedString(forIdentifier: identifier) ?? identifier
     }
 }
