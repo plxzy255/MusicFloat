@@ -81,6 +81,19 @@ Collect direct CPU/RSS samples without Instruments:
 ./script/profile.sh sample 30s --live --drive-music --scenario apple-music-driven-karaoke
 ```
 
+Collect stripped self-release memory when the question is "what does the app in
+/Applications or dist use?":
+
+```sh
+script/release_self.sh --memory --demo --memory-duration 30
+script/release_self.sh --memory --live --drive-music --memory-duration 30
+```
+
+Use this path to separate installed/release RSS from Xcode Debug, DerivedData,
+or Instruments-launched processes. It reports RSS samples plus `vmmap` physical
+footprint; prefer physical footprint when deciding whether a high RSS number is
+mostly shared framework mappings.
+
 List recent run ledger entries:
 
 ```sh
