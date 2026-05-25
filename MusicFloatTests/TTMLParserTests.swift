@@ -138,4 +138,22 @@ final class TTMLParserTests: XCTestCase {
         XCTAssertEqual(TTMLParser.parseTimecode("02:03.250"), 123.25)
         XCTAssertEqual(TTMLParser.parseTimecode("4.5s"), 4.5)
     }
+
+    @MainActor
+    func testCarriesTTMLLanguageMetadataIntoLyricsDocument() {
+        let ttml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <tt xml:lang="ja">
+          <body>
+            <div>
+              <p begin="00:01.000" end="00:03.000">東京へ</p>
+            </div>
+          </body>
+        </tt>
+        """
+
+        let document = TTMLParser.parse(ttml: ttml)
+
+        XCTAssertEqual(document?.sourceLanguageIdentifier, "ja")
+    }
 }

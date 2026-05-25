@@ -20,6 +20,23 @@ nonisolated enum RuntimeAdapterMode: String, CaseIterable, Identifiable, Sendabl
             "Disabled"
         }
     }
+
+    var translationProviderDisplayName: String {
+        switch self {
+        case .mock:
+            "Mock translation provider"
+        case .publicApple:
+            #if ENABLE_APPLE_TRANSLATION
+            "Apple on-device translation"
+            #else
+            "Apple on-device translation (not enabled in this build)"
+            #endif
+        case .experimental:
+            "Experimental translation provider placeholder"
+        case .disabled:
+            "Disabled translation provider"
+        }
+    }
 }
 
 nonisolated struct RuntimeFeatureFlags: Equatable, Sendable {

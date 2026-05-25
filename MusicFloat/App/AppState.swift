@@ -150,10 +150,14 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
                 activeLine: activeLine,
                 effectiveLyricTime: effectiveLyricTime,
                 translationText: translationText,
-                attributionText: "\(lyricsDocument.attribution) - \(translation.targetLanguage)",
+                attributionText: "\(lyricsDocument.attribution) - \(Self.localizedLanguageName(for: translation.targetLanguageIdentifier))",
                 widthPreset: widthPreset
             )
         }
+    }
+
+    private static func localizedLanguageName(for identifier: String) -> String {
+        Locale.current.localizedString(forIdentifier: identifier) ?? identifier
     }
 }
 
@@ -164,13 +168,14 @@ final class AppState {
     var isMockPreviewRunning = false
     var isLiveModeRunning = false
     var providerRuntimeState: ProviderRuntimeState = .idle
+    var translationRuntimeState: TranslationRuntimeState = .idle
     var overlayContentState: OverlayContentState = .ready
     var playerState: PlayerState
     var lyricsDocument: LyricsDocument
     var translation: LyricTranslation
     var runtimeFeatureFlags = RuntimeFeatureFlags.architectureDefault
     var showsTranslation: Bool
-    var preferredTranslationLanguage: String
+    var preferredTranslationLanguageIdentifier: String
     var overlayWidthPreset: OverlayWidthPreset
     var reduceHiddenMemoryUsage: Bool
     /// Global default offset used when the current track has no remembered
@@ -189,15 +194,19 @@ final class AppState {
     private let snapshotBuilder = LyricsOverlaySnapshotBuilder()
     private let userDefaults: UserDefaults
     private static let perTrackOffsetsKey = "perTrackLyricOffsets"
+    private static let preferredTranslationLanguageIdentifierKey = "preferredTranslationLanguageIdentifier"
 
     init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults
         playerState = MockMusicAppBridge.previewState
         lyricsDocument = MockLyricsProvider.previewDocument
 
-        let language = userDefaults.string(forKey: "preferredTranslationLanguage") ?? "French"
-        preferredTranslationLanguage = language
-        translation = MockTranslationProvider.previewTranslation(targetLanguage: language)
+        let languageIdentifier = Self.validStoredLanguageIdentifier(
+            userDefaults.string(forKey: Self.preferredTranslationLanguageIdentifierKey)
+        ) ?? Self.systemLanguageIdentifier
+        preferredTranslationLanguageIdentifier = languageIdentifier
+        userDefaults.set(languageIdentifier, forKey: Self.preferredTranslationLanguageIdentifierKey)
+        translation = MockTranslationProvider.previewTranslation(targetLanguageIdentifier: languageIdentifier)
         showsTranslation = userDefaults.object(forKey: "showTranslation") as? Bool ?? true
         overlayWidthPreset = OverlayWidthPreset(
             rawValue: userDefaults.string(forKey: "overlayWidthPreset") ?? OverlayWidthPreset.medium.rawValue
@@ -264,6 +273,21 @@ final class AppState {
         )
     }
 
+    var preferredTranslationLanguageName: String {
+        Self.localizedLanguageName(for: preferredTranslationLanguageIdentifier)
+    }
+
+    var lyricsSourceLanguageName: String {
+        guard let sourceLanguageIdentifier = lyricsDocument.sourceLanguageIdentifier else {
+            return "Unknown"
+        }
+        return Self.localizedLanguageName(for: sourceLanguageIdentifier)
+    }
+
+    var pendingTranslationDownload: (source: String, target: String)? {
+        translationRuntimeState.downloadLanguages
+    }
+
     // MARK: - Lyric offset
 
     /// Nudges the effective offset. If a track is playing, the nudge is
@@ -306,19 +330,28 @@ final class AppState {
 
     func applyPreferences(
         showsTranslation: Bool,
-        preferredTranslationLanguage: String,
+        preferredTranslationLanguageIdentifier: String,
         overlayWidthPreset: OverlayWidthPreset,
         reduceHiddenMemoryUsage: Bool
-    ) {
+    ) -> Bool {
+        let normalizedLanguageIdentifier = Self.validStoredLanguageIdentifier(preferredTranslationLanguageIdentifier)
+            ?? Self.systemLanguageIdentifier
+        let translationPreferenceChanged = self.showsTranslation != showsTranslation
+            || self.preferredTranslationLanguageIdentifier != normalizedLanguageIdentifier
         self.showsTranslation = showsTranslation
-        self.preferredTranslationLanguage = preferredTranslationLanguage
+        self.preferredTranslationLanguageIdentifier = normalizedLanguageIdentifier
         self.overlayWidthPreset = overlayWidthPreset
         self.reduceHiddenMemoryUsage = reduceHiddenMemoryUsage
-        translation = MockTranslationProvider.previewTranslation(targetLanguage: preferredTranslationLanguage)
+        userDefaults.set(normalizedLanguageIdentifier, forKey: Self.preferredTranslationLanguageIdentifierKey)
+        if translationPreferenceChanged {
+            clearTranslation()
+            setTranslationRuntimeState(showsTranslation ? .idle : .unavailable(reason: "Translation hidden"))
+        }
 
         AppTelemetry.settings.info(
-            "Preferences applied translation=\(showsTranslation) language=\(preferredTranslationLanguage, privacy: .public) width=\(overlayWidthPreset.rawValue, privacy: .public) reduceHiddenMemory=\(reduceHiddenMemoryUsage)"
+            "Preferences applied translation=\(showsTranslation) language=\(normalizedLanguageIdentifier, privacy: .public) width=\(overlayWidthPreset.rawValue, privacy: .public) reduceHiddenMemory=\(reduceHiddenMemoryUsage)"
         )
+        return translationPreferenceChanged
     }
 
     func updatePlayerState(_ playerState: PlayerState) {
@@ -356,7 +389,16 @@ final class AppState {
     }
 
     func clearTranslation() {
-        translation = LyricTranslation(targetLanguage: preferredTranslationLanguage, lines: [])
+        translation = LyricTranslation(
+            targetLanguageIdentifier: preferredTranslationLanguageIdentifier,
+            sourceLanguageIdentifier: lyricsDocument.sourceLanguageIdentifier,
+            lines: []
+        )
+    }
+
+    func setTranslationRuntimeState(_ state: TranslationRuntimeState) {
+        translationRuntimeState = state
+        AppTelemetry.performance.info("Translation runtime state set to \(state.displayName, privacy: .public)")
     }
 
     func applyProviderReady() {
@@ -394,5 +436,27 @@ final class AppState {
     func setOverlayContentState(_ state: OverlayContentState) {
         overlayContentState = state
         AppTelemetry.performance.info("Mock overlay state set to \(state.displayName, privacy: .public)")
+    }
+
+    static var systemLanguageIdentifier: String {
+        let preferred = Locale.preferredLanguages.first
+        return LyricsDocument.normalizedLanguageIdentifier(preferred)
+            ?? Locale.current.language.minimalIdentifier
+    }
+
+    static func validStoredLanguageIdentifier(_ rawValue: String?) -> String? {
+        guard let normalized = LyricsDocument.normalizedLanguageIdentifier(rawValue) else {
+            return nil
+        }
+        let firstComponent = normalized.split(separator: "-").first.map(String.init) ?? normalized
+        guard (2...3).contains(firstComponent.count),
+              firstComponent.allSatisfy({ $0.isLetter }) else {
+            return nil
+        }
+        return normalized
+    }
+
+    static func localizedLanguageName(for identifier: String) -> String {
+        Locale.current.localizedString(forIdentifier: identifier) ?? identifier
     }
 }

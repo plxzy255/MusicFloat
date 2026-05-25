@@ -34,12 +34,12 @@ usage() {
   cat >&2 <<'EOF'
 usage:
   script/profile.sh list
-  script/profile.sh record [template] [duration] [--demo] [--live] [--scenario name]
-  script/profile.sh phased [--demo] [--live] [--scenario name]
-  script/profile.sh sample [duration] [--demo] [--live] [--scenario name]
+  script/profile.sh record [template] [duration] [--demo] [--live] [--drive-music] [--scenario name]
+  script/profile.sh phased [--demo] [--live] [--drive-music] [--scenario name]
+  script/profile.sh sample [duration] [--demo] [--live] [--drive-music] [--scenario name]
   script/profile.sh report
   script/profile.sh compare-runs <baseline-run-id> <candidate-run-id>
-  script/profile.sh preflight-live
+  script/profile.sh preflight-live [--drive-music]
   script/profile.sh disk
   script/profile.sh open [template]
   script/profile.sh compare <trace-a> <trace-b>
@@ -65,6 +65,11 @@ examples:
 --live: Requires Music.app to already be playing a real track, launches the
         app with --live, captures MusicFloat logs, and verifies live playback,
         overlay appearance, and non-mock lyrics before accepting the trace.
+--drive-music: With --live, launches Music.app if needed, starts playback,
+               then performs a seek and next-track action during the trace so
+               live lyrics, playerInfo events, and watchdog correction are
+               exercised. This is intentionally opt-in because it changes the
+               user's active playback.
 --scenario: Names the workflow being measured so future comparisons do not mix
             unrelated evidence.
 EOF
@@ -143,7 +148,7 @@ parse_sample_duration() {
 
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
-      --demo|--live)
+      --demo|--live|--drive-music)
         shift
         ;;
       --scenario)
@@ -231,10 +236,35 @@ ensure_disk_headroom() {
   fi
 }
 
+music_playback_driver_script() {
+  /usr/bin/osascript <<'APPLESCRIPT'
+tell application id "com.apple.Music"
+  launch
+  delay 0.5
+  if player state is not playing then play
+  delay 0.5
+  set playbackState to player state as string
+  set trackName to ""
+  set artistName to ""
+  set playerPosition to player position
+  try
+    set trackName to name of current track
+    set artistName to artist of current track
+  end try
+end tell
+
+return playbackState & tab & trackName & tab & artistName & tab & playerPosition
+APPLESCRIPT
+}
+
 preflight_live() {
+  local drive_music="${1:-false}"
   local info
   set +e
-  info="$(/usr/bin/osascript <<'APPLESCRIPT' 2>/dev/null
+  if [[ "$drive_music" == "true" ]]; then
+    info="$(music_playback_driver_script 2>/dev/null)"
+  else
+    info="$(/usr/bin/osascript <<'APPLESCRIPT' 2>/dev/null
 tell application "System Events"
   set musicRunning to exists process "Music"
 end tell
@@ -256,12 +286,13 @@ end tell
 return playbackState & tab & trackName & tab & artistName & tab & playerPosition
 APPLESCRIPT
 )"
+  fi
   local status="$?"
   set -e
 
   if [[ "$status" -ne 0 || -z "$info" ]]; then
     echo "Error: could not inspect Music.app playback for --live profiling." >&2
-    echo "Start Music.app, play a lyric-capable Apple Music track, then retry." >&2
+    echo "Start Music.app, play a lyric-capable Apple Music track, then retry; or use --drive-music to let the script start playback." >&2
     exit 1
   fi
 
@@ -283,7 +314,11 @@ APPLESCRIPT
 
   echo "  Live preflight: Music.app is playing \"$track_name\" by ${artist_name:-unknown artist} at ${player_position:-unknown}s."
   echo "  The profiled app will launch with --live, start Live Apple Music mode, and show the overlay."
-  echo "  Keep Music playing and visually confirm lyrics appear during the trace."
+  if [[ "$drive_music" == "true" ]]; then
+    echo "  Music driver: enabled; the trace will seek and attempt a next-track action."
+  else
+    echo "  Keep Music playing and visually confirm lyrics appear during the trace."
+  fi
 }
 
 parse_profile_flags() {
@@ -292,6 +327,15 @@ parse_profile_flags() {
 
   if [[ "$use_demo" == "true" && "$use_live" == "true" ]]; then
     echo "Error: choose either --demo or --live, not both." >&2
+    exit 2
+  fi
+}
+
+require_drive_music_live() {
+  local drive_music="$1"
+  local use_live="$2"
+  if [[ "$drive_music" == "true" && "$use_live" != "true" ]]; then
+    echo "Error: --drive-music can only be used with --live." >&2
     exit 2
   fi
 }
@@ -333,6 +377,56 @@ stop_usage_capture() {
   if [[ -n "$usage_pid" ]]; then
     /bin/kill "$usage_pid" >/dev/null 2>&1 || true
     wait "$usage_pid" >/dev/null 2>&1 || true
+  fi
+}
+
+start_music_driver() {
+  local driver_log_path="$1"
+  /bin/mkdir -p "$(dirname "$driver_log_path")"
+  : > "$driver_log_path"
+  (
+    set +e
+    echo "$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ) driver start"
+    /bin/sleep 5
+    /usr/bin/osascript <<'APPLESCRIPT'
+tell application id "com.apple.Music"
+  if player state is playing then
+    set currentPosition to player position
+    set player position to currentPosition + 15
+  end if
+end tell
+APPLESCRIPT
+    echo "$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ) seek +15s rc=$?"
+    /bin/sleep 6
+    /usr/bin/osascript <<'APPLESCRIPT'
+tell application id "com.apple.Music"
+  if player state is playing then next track
+end tell
+APPLESCRIPT
+    echo "$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ) next track rc=$?"
+    /bin/sleep 6
+    /usr/bin/osascript <<'APPLESCRIPT'
+tell application id "com.apple.Music"
+  if player state is playing then
+    set currentPosition to player position
+    if currentPosition > 20 then
+      set player position to currentPosition - 10
+    else
+      set player position to currentPosition + 10
+    end if
+  end if
+end tell
+APPLESCRIPT
+    echo "$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ) seek correction rc=$?"
+  ) > "$driver_log_path" 2>&1 &
+  echo "$!"
+}
+
+stop_music_driver() {
+  local driver_pid="${1:-}"
+  if [[ -n "$driver_pid" ]]; then
+    /bin/kill "$driver_pid" >/dev/null 2>&1 || true
+    wait "$driver_pid" >/dev/null 2>&1 || true
   fi
 }
 
@@ -519,8 +613,9 @@ require_live_log_pattern() {
 verify_live_recording() {
   local log_path="$1"
   local trace_path="$2"
+  local drive_music="${3:-false}"
 
-  verify_live_log "$log_path"
+  verify_live_log "$log_path" "$drive_music"
 
   local trace_kb
   trace_kb="$(/usr/bin/du -sk "$trace_path" | /usr/bin/awk '{print $1}')"
@@ -533,6 +628,7 @@ verify_live_recording() {
 
 verify_live_log() {
   local log_path="$1"
+  local drive_music="${2:-false}"
 
   require_live_log_pattern "$log_path" "Live mode requested" "live launch"
   require_live_log_pattern "$log_path" "Live Apple Music bridge started" "live bridge start"
@@ -541,19 +637,23 @@ verify_live_log() {
   require_live_log_pattern "$log_path" "Lyrics overlay view appeared" "overlay appearance"
   require_live_log_pattern "$log_path" "Lyrics document applied source=(appleMusicWeb|lrclib|musicApp|musicAppUI|publicProvider)" "non-mock lyrics document"
   require_live_log_pattern "$log_path" "Provider pipeline ready" "provider ready state"
+  if [[ "$drive_music" == "true" ]]; then
+    require_live_log_pattern "$log_path" "(SEEK_DETECTED|Live track changed)" "driven seek or track-change event"
+  fi
 
   echo "  Live verification: playback, overlay, and non-mock lyrics confirmed"
   echo "  Live verification log: $log_path"
 }
 
 # ── record_one: records a single template ───────────────────────────────────
-# Args: template duration use_demo use_live scenario
+# Args: template duration use_demo use_live scenario drive_music
 record_one() {
   local template="$1"
   local duration="$2"
   local use_demo="${3:-false}"
   local use_live="${4:-false}"
   local scenario="${5:-unspecified}"
+  local drive_music="${6:-false}"
   local timestamp
   timestamp="$(/bin/date -u +%Y%m%d-%H%M%SZ)"
   local safe_name="${template// /-}"
@@ -562,8 +662,10 @@ record_one() {
   local live_log_path="$LIVE_LOG_DIR/${APP_NAME}-${safe_name}-$timestamp.live.log"
   local ledger_live_log_path=""
   local usage_log_path="$USAGE_LOG_DIR/${APP_NAME}-${safe_name}-$timestamp.usage.csv"
+  local driver_log_path="$LIVE_LOG_DIR/${APP_NAME}-${safe_name}-$timestamp.music-driver.log"
   local live_log_pid=""
   local usage_log_pid=""
+  local driver_pid=""
 
   /bin/mkdir -p "$TRACE_DIR"
   stop_app
@@ -581,6 +683,9 @@ record_one() {
     /bin/sleep 0.5
   fi
   usage_log_pid="$(start_usage_capture "$usage_log_path")"
+  if [[ "$use_live" == "true" && "$drive_music" == "true" ]]; then
+    driver_pid="$(start_music_driver "$driver_log_path")"
+  fi
 
   printf "  \033[1;36m▶\033[0m %-22s (%s) ... " "$template" "$duration"
   set +e
@@ -594,6 +699,7 @@ record_one() {
   set -e
 
   stop_app
+  stop_music_driver "$driver_pid"
   stop_usage_capture "$usage_log_pid"
   stop_live_log_capture "$live_log_pid"
 
@@ -604,11 +710,13 @@ record_one() {
   fi
 
   if [[ "$use_live" == "true" ]]; then
-    if ! verify_live_recording "$live_log_path" "$trace_path"; then
+    if ! verify_live_recording "$live_log_path" "$trace_path" "$drive_music"; then
       printf "\033[1;31mFAILED\033[0m\n"
+      [[ "$drive_music" == "true" ]] && echo "  Music driver log: $driver_log_path"
       append_run_ledger "$run_id" "record" "$(mode_name "$use_demo" "$use_live")" "$scenario" "$duration" "$template" "failed" "false" "$trace_path" "$usage_log_path" "$ledger_live_log_path" "live verification failed"
       return 1
     fi
+    [[ "$drive_music" == "true" ]] && echo "  Music driver log: $driver_log_path"
   fi
   if ! summarize_usage_capture "$usage_log_path"; then
     printf "\033[1;31mFAILED\033[0m\n"
@@ -627,6 +735,7 @@ do_record() {
   local duration="${3:-20s}"
   local use_demo="false"
   local use_live="false"
+  local drive_music="false"
   local scenario
   scenario="$(parse_scenario "$@")"
 
@@ -634,11 +743,13 @@ do_record() {
   for arg in "$@"; do
     [[ "$arg" == "--demo" ]] && use_demo="true"
     [[ "$arg" == "--live" ]] && use_live="true"
+    [[ "$arg" == "--drive-music" ]] && drive_music="true"
   done
   parse_profile_flags "$use_demo" "$use_live"
+  require_drive_music_live "$drive_music" "$use_live"
   ensure_disk_headroom 2
   if [[ "$use_live" == "true" ]]; then
-    preflight_live
+    preflight_live "$drive_music"
   fi
 
   build_app
@@ -646,9 +757,10 @@ do_record() {
   echo "  Recording: $template ($duration)"
   echo "  Demo mode: $use_demo"
   echo "  Live mode: $use_live"
+  echo "  Drive Music: $drive_music"
   echo ""
 
-  record_one "$template" "$duration" "$use_demo" "$use_live" "$scenario"
+  record_one "$template" "$duration" "$use_demo" "$use_live" "$scenario" "$drive_music"
   print_artifact_usage
 }
 
@@ -656,16 +768,19 @@ do_record() {
 do_phased() {
   local use_demo="false"
   local use_live="false"
+  local drive_music="false"
   local scenario
   scenario="$(parse_scenario "$@")"
   for arg in "$@"; do
     [[ "$arg" == "--demo" ]] && use_demo="true"
     [[ "$arg" == "--live" ]] && use_live="true"
+    [[ "$arg" == "--drive-music" ]] && drive_music="true"
   done
   parse_profile_flags "$use_demo" "$use_live"
+  require_drive_music_live "$drive_music" "$use_live"
   ensure_disk_headroom 8
   if [[ "$use_live" == "true" ]]; then
-    preflight_live
+    preflight_live "$drive_music"
   fi
 
   build_app
@@ -677,7 +792,7 @@ do_phased() {
 
   echo ""
   echo "  ═══════════════════════════════════════════════════════════"
-  printf "  Phased profiling: %d templates | Demo: %s | Live: %s\n" "$total" "$use_demo" "$use_live"
+  printf "  Phased profiling: %d templates | Demo: %s | Live: %s | Drive Music: %s\n" "$total" "$use_demo" "$use_live" "$drive_music"
   echo "  ═══════════════════════════════════════════════════════════"
   echo ""
 
@@ -685,7 +800,7 @@ do_phased() {
   for entry in "${PHASED_TEMPLATES[@]}"; do
     IFS='|' read -r template duration desc <<< "$entry"
     printf "  [%d/%d] %s\n" "$i" "$total" "$desc"
-    if record_one "$template" "$duration" "$use_demo" "$use_live" "$scenario"; then
+    if record_one "$template" "$duration" "$use_demo" "$use_live" "$scenario" "$drive_music"; then
       passed=$((passed + 1))
     else
       failed=$((failed + 1))
@@ -710,31 +825,36 @@ do_sample() {
   duration="$(parse_sample_duration "$@")"
   local use_demo="false"
   local use_live="false"
+  local drive_music="false"
   local scenario
   scenario="$(parse_scenario "$@")"
   for arg in "$@"; do
     [[ "$arg" == "--demo" ]] && use_demo="true"
     [[ "$arg" == "--live" ]] && use_live="true"
+    [[ "$arg" == "--drive-music" ]] && drive_music="true"
   done
   parse_profile_flags "$use_demo" "$use_live"
+  require_drive_music_live "$drive_music" "$use_live"
   ensure_disk_headroom 1
   if [[ "$use_live" == "true" ]]; then
-    preflight_live
+    preflight_live "$drive_music"
   fi
 
   build_app
 
   local seconds
   seconds="$(duration_to_sleep_seconds "$duration")"
-  local timestamp safe_name usage_log_path live_log_path ledger_live_log_path live_log_pid usage_log_pid
+  local timestamp safe_name usage_log_path live_log_path driver_log_path ledger_live_log_path live_log_pid usage_log_pid driver_pid
   timestamp="$(/bin/date -u +%Y%m%d-%H%M%SZ)"
   safe_name="Direct-Sample"
   local run_id="${timestamp}-$(mode_name "$use_demo" "$use_live")-${safe_name}-$(git_value rev-parse --short HEAD)"
   usage_log_path="$USAGE_LOG_DIR/${APP_NAME}-${safe_name}-$timestamp.usage.csv"
   live_log_path="$LIVE_LOG_DIR/${APP_NAME}-${safe_name}-$timestamp.live.log"
+  driver_log_path="$LIVE_LOG_DIR/${APP_NAME}-${safe_name}-$timestamp.music-driver.log"
   ledger_live_log_path=""
   live_log_pid=""
   usage_log_pid=""
+  driver_pid=""
 
   stop_app
   local launch_args=("$APP_EXEC")
@@ -750,20 +870,26 @@ do_sample() {
     /bin/sleep 0.5
   fi
 
-  echo "  Direct sample: ${duration} | Demo: $use_demo | Live: $use_live"
+  echo "  Direct sample: ${duration} | Demo: $use_demo | Live: $use_live | Drive Music: $drive_music"
   "${launch_args[@]}" >/dev/null 2>&1 &
   usage_log_pid="$(start_usage_capture "$usage_log_path")"
+  if [[ "$use_live" == "true" && "$drive_music" == "true" ]]; then
+    driver_pid="$(start_music_driver "$driver_log_path")"
+  fi
   /bin/sleep "$seconds"
   stop_app
+  stop_music_driver "$driver_pid"
   stop_usage_capture "$usage_log_pid"
   stop_live_log_capture "$live_log_pid"
 
   if [[ "$use_live" == "true" ]]; then
-    if ! verify_live_log "$live_log_path"; then
+    if ! verify_live_log "$live_log_path" "$drive_music"; then
       summarize_usage_capture "$usage_log_path" || true
+      [[ "$drive_music" == "true" ]] && echo "  Music driver log: $driver_log_path"
       append_run_ledger "$run_id" "sample" "$(mode_name "$use_demo" "$use_live")" "$scenario" "$duration" "" "failed" "false" "" "$usage_log_path" "$ledger_live_log_path" "live verification failed"
       return 1
     fi
+    [[ "$drive_music" == "true" ]] && echo "  Music driver log: $driver_log_path"
   fi
   if ! summarize_usage_capture "$usage_log_path"; then
     append_run_ledger "$run_id" "sample" "$(mode_name "$use_demo" "$use_live")" "$scenario" "$duration" "" "failed" "false" "" "$usage_log_path" "$ledger_live_log_path" "usage capture failed"
@@ -965,7 +1091,11 @@ case "$mode" in
     do_compare_runs "$@"
     ;;
   preflight-live)
-    preflight_live
+    drive_music="false"
+    for arg in "$@"; do
+      [[ "$arg" == "--drive-music" ]] && drive_music="true"
+    done
+    preflight_live "$drive_music"
     ;;
   disk)
     print_artifact_usage

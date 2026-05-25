@@ -1,17 +1,52 @@
 import OSLog
 import SwiftUI
+#if ENABLE_APPLE_TRANSLATION
+@preconcurrency @unsafe import Translation
+#endif
 
 struct SettingsView: View {
     @Bindable var appState: AppState
+    var onTranslationPreferencesChanged: () -> Void = {}
+    var onTranslationPreparationCompleted: () -> Void = {}
+
     @AppStorage("showTranslation") private var showsTranslation = true
-    @AppStorage("preferredTranslationLanguage") private var preferredTranslationLanguage = "French"
+    @AppStorage("preferredTranslationLanguageIdentifier") private var preferredTranslationLanguageIdentifier = AppState.systemLanguageIdentifier
     @AppStorage("overlayWidthPreset") private var overlayWidthPresetRaw = OverlayWidthPreset.medium.rawValue
     @AppStorage("reduceHiddenMemoryUsage") private var reduceHiddenMemoryUsage = true
     @AppStorage("lrclibFallbackEnabled") private var lrclibFallbackEnabled = true
     @State private var mediaUserTokenInput: String = ""
     @State private var mediaUserTokenSavedHint: String = ""
+    @State private var supportedTranslationLanguages: [Locale.Language] = []
+    #if ENABLE_APPLE_TRANSLATION
+    @State private var preparationConfiguration: TranslationSession.Configuration?
+    #endif
 
     var body: some View {
+        #if ENABLE_APPLE_TRANSLATION
+        settingsForm
+            .translationTask(preparationConfiguration) { session in
+                do {
+                    try await session.prepareTranslation()
+                    preparationConfiguration = nil
+                    appState.setTranslationRuntimeState(.idle)
+                    onTranslationPreparationCompleted()
+                    AppTelemetry.settings.info("Translation preparation completed")
+                } catch {
+                    preparationConfiguration = nil
+                    let reason = Self.translationFailureMessage(
+                        prefix: "Translation preparation failed",
+                        error: error
+                    )
+                    appState.setTranslationRuntimeState(.failed(reason))
+                    AppTelemetry.settings.error("Translation preparation failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        #else
+        settingsForm
+        #endif
+    }
+
+    private var settingsForm: some View {
         Form {
             Section("Apple Music") {
                 if MediaUserTokenStore.isConfigured {
@@ -65,7 +100,30 @@ struct SettingsView: View {
             }
 
             Section("Translation") {
-                TextField("Preferred language", text: $preferredTranslationLanguage)
+                Picker("Target language", selection: $preferredTranslationLanguageIdentifier) {
+                    ForEach(translationLanguageOptions, id: \.minimalIdentifier) { language in
+                        Text(Self.localizedLanguageName(for: language.minimalIdentifier))
+                            .tag(language.minimalIdentifier)
+                    }
+                }
+
+                LabeledContent("Provider", value: appState.runtimeFeatureFlags.translationProviderMode.translationProviderDisplayName)
+                LabeledContent("Target", value: appState.preferredTranslationLanguageName)
+                LabeledContent("Source", value: appState.lyricsSourceLanguageName)
+                LabeledContent("Status", value: appState.translationRuntimeState.detailText)
+
+                #if ENABLE_APPLE_TRANSLATION
+                if let download = appState.pendingTranslationDownload {
+                    Button("Prepare Translation Languages") {
+                        preparationConfiguration = TranslationSession.Configuration(
+                            source: Locale.Language(identifier: download.source),
+                            target: Locale.Language(identifier: download.target),
+                            preferredStrategy: .lowLatency
+                        )
+                        AppTelemetry.settings.info("Translation preparation requested")
+                    }
+                }
+                #endif
             }
 
             Section("Runtime") {
@@ -75,6 +133,7 @@ struct SettingsView: View {
                 LabeledContent("Translation provider", value: appState.runtimeFeatureFlags.translationProviderMode.displayName)
                 LabeledContent("Hidden refresh", value: appState.runtimeFeatureFlags.allowsHiddenProviderRefresh ? "Enabled" : "Disabled")
                 LabeledContent("Provider state", value: appState.providerRuntimeState.displayName)
+                LabeledContent("Translation state", value: appState.translationRuntimeState.displayName)
                 LabeledContent("Cache", value: "Ephemeral placeholder")
             }
         }
@@ -84,11 +143,14 @@ struct SettingsView: View {
         .onAppear {
             AppTelemetry.settings.info("Settings view appeared")
             syncPreferencesToAppState()
+            Task {
+                await loadTranslationLanguageOptions()
+            }
         }
         .onChange(of: showsTranslation) {
             syncPreferencesToAppState()
         }
-        .onChange(of: preferredTranslationLanguage) {
+        .onChange(of: preferredTranslationLanguageIdentifier) {
             syncPreferencesToAppState()
         }
         .onChange(of: overlayWidthPresetRaw) {
@@ -99,14 +161,85 @@ struct SettingsView: View {
         }
     }
 
+    private var translationLanguageOptions: [Locale.Language] {
+        let current = Locale.Language(identifier: preferredTranslationLanguageIdentifier)
+        guard !supportedTranslationLanguages.isEmpty else {
+            return [current]
+        }
+        if supportedTranslationLanguages.contains(where: { $0.minimalIdentifier == current.minimalIdentifier }) {
+            return supportedTranslationLanguages
+        }
+        return ([current] + supportedTranslationLanguages).sorted {
+            Self.localizedLanguageName(for: $0.minimalIdentifier) < Self.localizedLanguageName(for: $1.minimalIdentifier)
+        }
+    }
+
     private func syncPreferencesToAppState() {
         let widthPreset = OverlayWidthPreset(rawValue: overlayWidthPresetRaw) ?? .medium
-        appState.applyPreferences(
+        let translationPreferencesChanged = appState.applyPreferences(
             showsTranslation: showsTranslation,
-            preferredTranslationLanguage: preferredTranslationLanguage,
+            preferredTranslationLanguageIdentifier: preferredTranslationLanguageIdentifier,
             overlayWidthPreset: widthPreset,
             reduceHiddenMemoryUsage: reduceHiddenMemoryUsage
         )
+        if translationPreferencesChanged {
+            onTranslationPreferencesChanged()
+        }
+    }
+
+    private func loadTranslationLanguageOptions() async {
+        let languages = await Self.loadSupportedTranslationLanguages()
+        supportedTranslationLanguages = languages.sorted {
+            Self.localizedLanguageName(for: $0.minimalIdentifier) < Self.localizedLanguageName(for: $1.minimalIdentifier)
+        }
+        if !supportedTranslationLanguages.isEmpty,
+           !Self.languageList(supportedTranslationLanguages, containsIdentifier: preferredTranslationLanguageIdentifier) {
+            preferredTranslationLanguageIdentifier = Self.defaultSupportedTargetLanguageIdentifier(
+                from: supportedTranslationLanguages
+            )
+            syncPreferencesToAppState()
+        }
+    }
+
+    private static func localizedLanguageName(for identifier: String) -> String {
+        Locale.current.localizedString(forIdentifier: identifier) ?? identifier
+    }
+
+    private static func translationFailureMessage(prefix: String, error: any Error) -> String {
+        let detail = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !detail.isEmpty else {
+            return prefix
+        }
+        return "\(prefix): \(detail)"
+    }
+
+    private static func languageList(
+        _ languages: [Locale.Language],
+        containsIdentifier identifier: String
+    ) -> Bool {
+        guard let normalized = LyricsDocument.normalizedLanguageIdentifier(identifier) else {
+            return false
+        }
+        return languages.contains { $0.minimalIdentifier == normalized }
+    }
+
+    private static func defaultSupportedTargetLanguageIdentifier(
+        from languages: [Locale.Language]
+    ) -> String {
+        if languageList(languages, containsIdentifier: AppState.systemLanguageIdentifier) {
+            return AppState.systemLanguageIdentifier
+        }
+        return languages.first?.minimalIdentifier ?? AppState.systemLanguageIdentifier
+    }
+
+    nonisolated private static func loadSupportedTranslationLanguages() async -> [Locale.Language] {
+        #if ENABLE_APPLE_TRANSLATION
+        await Task.detached {
+            await LanguageAvailability(preferredStrategy: .lowLatency).supportedLanguages
+        }.value
+        #else
+        []
+        #endif
     }
 }
 

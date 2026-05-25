@@ -70,7 +70,7 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
         guard AppleMusicEventListener.isMusicAppRunning else {
             return .disconnected
         }
-        return await MainActor.run { Self.pullSnapshot() } ?? .disconnected
+        return await Self.pullSnapshot() ?? .disconnected
     }
 
     func events() -> AsyncStream<PlayerState> {
@@ -101,7 +101,7 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
                             if attempt > 0 {
                                 try? await Task.sleep(nanoseconds: UInt64(attempt) * 250_000_000)
                             }
-                            guard let snapshot = Self.pullSnapshot() else {
+                            guard let snapshot = await Self.pullSnapshot() else {
                                 continue
                             }
                             if let eventTrack = event.track,
@@ -116,7 +116,7 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
                             break
                         }
                     } else if event.track == nil {
-                        matchingSnapshot = Self.pullSnapshot()
+                        matchingSnapshot = await Self.pullSnapshot()
                     }
 
                     let refinedEvent = Self.refinePlayerInfoEvent(
@@ -258,10 +258,9 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
         return Double(normalized) ?? 0
     }
 
-    @MainActor
-    private static func pullSnapshot() -> PlayerState? {
+    private static func pullSnapshot() async -> PlayerState? {
         guard AppleMusicEventListener.isMusicAppRunning else { return nil }
-        guard let raw = AppleScriptRunner.runString(snapshotScript), !raw.isEmpty else {
+        guard let raw = await AppleScriptRunner.runStringOffMain(snapshotScript), !raw.isEmpty else {
             return nil
         }
         let parts = raw.components(separatedBy: "||")

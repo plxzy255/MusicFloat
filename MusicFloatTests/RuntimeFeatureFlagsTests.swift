@@ -19,4 +19,21 @@ final class RuntimeFeatureFlagsTests: XCTestCase {
         XCTAssertEqual(flags.translationProviderMode, .publicApple)
         XCTAssertFalse(flags.allowsHiddenProviderRefresh)
     }
+
+    func testTranslationProviderDisplayNamesMatchAdapterModes() {
+        XCTAssertEqual(RuntimeAdapterMode.mock.translationProviderDisplayName, "Mock translation provider")
+        #if ENABLE_APPLE_TRANSLATION
+        XCTAssertEqual(RuntimeAdapterMode.publicApple.translationProviderDisplayName, "Apple on-device translation")
+        #else
+        XCTAssertEqual(
+            RuntimeAdapterMode.publicApple.translationProviderDisplayName,
+            "Apple on-device translation (not enabled in this build)"
+        )
+        #endif
+        XCTAssertEqual(
+            RuntimeAdapterMode.experimental.translationProviderDisplayName,
+            "Experimental translation provider placeholder"
+        )
+        XCTAssertEqual(RuntimeAdapterMode.disabled.translationProviderDisplayName, "Disabled translation provider")
+    }
 }

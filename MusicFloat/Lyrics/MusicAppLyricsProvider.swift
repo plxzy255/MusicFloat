@@ -16,11 +16,11 @@ enum MusicAppLyricsProvider {
     static var hasAccessibilityPermission: Bool {
         AXIsProcessTrusted()
     }
-    /// On the first successful scrape per app session, dump every AX attribute
-    /// on a sample of lyric buttons (and the picked active line) so we can
-    /// discover what Music.app actually uses to mark the active line on this
-    /// OS build. One shot — then clears itself.
-    private static var pendingAXDump: Bool = true
+    /// Keep expensive AX attribute dumps opt-in. Dumping several lyric buttons
+    /// on the main actor is useful during UI forensics, but it can make the
+    /// live button feel frozen on real Music.app trees.
+    private static let axDumpEnabled = false
+    private static var pendingAXDump = axDumpEnabled
 
     private static let script = """
     try
@@ -46,7 +46,7 @@ enum MusicAppLyricsProvider {
     end try
     """
 
-    static func fetchCurrentTrackLyrics() -> LyricsDocument? {
+    static func fetchCurrentTrackLyrics() async -> LyricsDocument? {
         requiresAccessibilityPermission = false
         shouldRetryVisibleLyrics = false
 
@@ -54,19 +54,33 @@ enum MusicAppLyricsProvider {
             AppTelemetry.performance.info("Music.app AppleScript lyrics skipped because Music is not running")
             return nil
         }
-        guard let raw = AppleScriptRunner.runString(script) else {
+        guard let raw = await AppleScriptRunner.runStringOffMain(script) else {
             AppTelemetry.performance.info("Music.app AppleScript lyrics returned no script result")
             return nil
         }
         guard raw.hasPrefix("__LYRICS__\n") else {
             logEmptyResult(raw)
-            return fetchCurrentVisibleLyricsLineDocument(promptForAccessibility: true)
+            markVisibleLyricsFallbackNeeded(for: raw)
+            return nil
         }
         let trimmed = raw
             .dropFirst("__LYRICS__\n".count)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         return LyricsParser.parsePlain(trimmed, source: .musicApp)
+    }
+
+    private static func markVisibleLyricsFallbackNeeded(for raw: String) {
+        guard raw == "__EMPTY__" || raw.hasPrefix("__ERROR__||") else {
+            return
+        }
+        if hasAccessibilityTrust(prompt: false) {
+            requiresAccessibilityPermission = false
+            shouldRetryVisibleLyrics = true
+        } else {
+            requiresAccessibilityPermission = true
+            shouldRetryVisibleLyrics = false
+        }
     }
 
     /// Returns just the active visible lyric line text, without wrapping it
@@ -426,7 +440,7 @@ enum MusicAppLyricsProvider {
 
     private static func logEmptyResult(_ raw: String) {
         if raw == "__EMPTY__" {
-            AppTelemetry.performance.info("Music.app AppleScript lyrics empty for current track; trying Music UI lyrics")
+            AppTelemetry.performance.info("Music.app AppleScript lyrics empty for current track; trying Apple Music web")
         } else if raw.hasPrefix("__STATE__||") {
             let state = raw.replacingOccurrences(of: "__STATE__||", with: "")
             AppTelemetry.performance.info("Music.app AppleScript lyrics unavailable in player state=\(state, privacy: .public)")

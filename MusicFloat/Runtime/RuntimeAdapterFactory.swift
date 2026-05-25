@@ -48,7 +48,7 @@ enum RuntimeAdapterFactory {
         case .mock:
             MockTranslationProvider()
         case .publicApple:
-            PublicTranslationProviderPlaceholder()
+            AppleTranslationProvider()
         case .experimental:
             ExperimentalTranslationProviderPlaceholder()
         case .disabled:

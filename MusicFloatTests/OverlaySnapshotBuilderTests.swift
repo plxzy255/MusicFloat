@@ -35,7 +35,7 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
             contentState: .ready,
             playerState: MockMusicAppBridge.previewState,
             lyricsDocument: MockLyricsProvider.previewDocument,
-            translation: MockTranslationProvider.previewTranslation(targetLanguage: "French"),
+            translation: MockTranslationProvider.previewTranslation(targetLanguageIdentifier: "fr"),
             showsTranslation: true,
             widthPreset: .medium
         )
@@ -52,7 +52,7 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
             contentState: .unavailable,
             playerState: .disconnected,
             lyricsDocument: MockLyricsProvider.previewDocument,
-            translation: MockTranslationProvider.previewTranslation(targetLanguage: "French"),
+            translation: MockTranslationProvider.previewTranslation(targetLanguageIdentifier: "fr"),
             showsTranslation: true,
             widthPreset: .compact
         )
@@ -107,7 +107,7 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
             contentState: .ready,
             playerState: playerState(elapsedTime: 4.25),
             lyricsDocument: document,
-            translation: LyricTranslation(targetLanguage: "French", lines: []),
+            translation: LyricTranslation(targetLanguageIdentifier: "fr", sourceLanguageIdentifier: "en", lines: []),
             showsTranslation: false,
             widthPreset: .medium
         )
@@ -130,7 +130,7 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
             contentState: .ready,
             playerState: playerState(elapsedTime: 120),
             lyricsDocument: document,
-            translation: LyricTranslation(targetLanguage: "French", lines: []),
+            translation: LyricTranslation(targetLanguageIdentifier: "fr", sourceLanguageIdentifier: "en", lines: []),
             showsTranslation: false,
             widthPreset: .medium
         )
@@ -161,7 +161,7 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
             contentState: .ready,
             playerState: playerState(elapsedTime: 5.75),
             lyricsDocument: document,
-            translation: LyricTranslation(targetLanguage: "French", lines: []),
+            translation: LyricTranslation(targetLanguageIdentifier: "fr", sourceLanguageIdentifier: "en", lines: []),
             showsTranslation: false,
             widthPreset: .medium,
             lyricOffsetSeconds: 0.75
@@ -173,6 +173,18 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
             LyricsOverlaySnapshotBuilder.activeSyllableIndex(in: snapshot.activeLine!, at: snapshot.effectiveLyricTime),
             1
         )
+    }
+
+    @MainActor
+    func testLyricsDocumentOffsetPreservesSourceLanguage() {
+        let document = LyricsDocument(
+            source: .lrclib,
+            lines: [LyricLine(id: 0, text: "Language stays", startTime: 1)],
+            isTimed: true,
+            sourceLanguageIdentifier: "en"
+        )
+
+        XCTAssertEqual(document.withOffsetCorrection(1.5).sourceLanguageIdentifier, "en")
     }
 
     @MainActor

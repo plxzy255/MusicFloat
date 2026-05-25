@@ -64,6 +64,7 @@ struct LyricsDocument: Equatable, Sendable {
     let source: LyricsSource
     let lines: [LyricLine]
     let isTimed: Bool
+    let sourceLanguageIdentifier: String?
     /// Seconds to add to player `elapsedTime` before resolving the active line.
     /// Populated by the calibration pass when AX ground-truth disagrees with
     /// the LRC document's clock (e.g. LRCLIB matched a different master).
@@ -73,11 +74,13 @@ struct LyricsDocument: Equatable, Sendable {
         source: LyricsSource,
         lines: [LyricLine],
         isTimed: Bool,
+        sourceLanguageIdentifier: String? = nil,
         offsetCorrection: TimeInterval = 0
     ) {
         self.source = source
         self.lines = lines
         self.isTimed = isTimed
+        self.sourceLanguageIdentifier = Self.normalizedLanguageIdentifier(sourceLanguageIdentifier)
         self.offsetCorrection = offsetCorrection
     }
 
@@ -90,7 +93,17 @@ struct LyricsDocument: Equatable, Sendable {
             source: source,
             lines: lines,
             isTimed: isTimed,
+            sourceLanguageIdentifier: sourceLanguageIdentifier,
             offsetCorrection: offset
         )
+    }
+
+    static func normalizedLanguageIdentifier(_ identifier: String?) -> String? {
+        guard let identifier else { return nil }
+        let normalized = identifier
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "_", with: "-")
+        guard !normalized.isEmpty else { return nil }
+        return Locale.Language(identifier: normalized).minimalIdentifier
     }
 }

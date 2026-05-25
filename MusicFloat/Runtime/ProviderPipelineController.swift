@@ -14,6 +14,7 @@ final class ProviderPipelineController {
     private let lyricsProvider: any LyricsProvider
     private let translationProvider: any TranslationProvider
     private var loadTask: Task<Void, Never>?
+    private var translationTask: Task<Void, Never>?
     private var lastIntegratedVisibleLyricsRefresh = Date.distantPast
     private let axObserver = MusicAppAXObserver()
     private weak var observedAppState: AppState?
@@ -35,6 +36,7 @@ final class ProviderPipelineController {
             AppTelemetry.performance.info("Provider pipeline load started")
             appState.setProviderRuntimeState(.loading)
             appState.setOverlayContentState(.loading)
+            cancelTranslationTask(appState: appState)
 
             loadTask = Task { @MainActor [weak self, weak appState] in
                 await AppTelemetry.measure("ProviderPipelineController.prepareOverlayContent.load") {
@@ -47,6 +49,8 @@ final class ProviderPipelineController {
                     }
 
                     guard let track = appState.playerState.track else {
+                        appState.clearTranslation()
+                        appState.setTranslationRuntimeState(.unavailable(reason: "Translation will wait for lyrics"))
                         appState.applyProviderUnavailable()
                         return
                     }
@@ -64,10 +68,20 @@ final class ProviderPipelineController {
                     switch lyricsResult {
                     case .available(let document):
                         appState.applyLyricsDocument(document)
-                        await self.loadTranslation(for: document, appState: appState)
+                        appState.applyProviderReady()
+                        appState.clearTranslation()
+                        self.startTranslation(
+                            for: document,
+                            requestedTrackID: requestedTrackID,
+                            appState: appState
+                        )
                     case .unavailable:
+                        appState.clearTranslation()
+                        appState.setTranslationRuntimeState(.unavailable(reason: "Translation will wait for lyrics"))
                         appState.applyProviderUnavailable()
                     case .failed(let message):
+                        appState.clearTranslation()
+                        appState.setTranslationRuntimeState(.unavailable(reason: "Translation will wait for lyrics"))
                         appState.applyProviderFailure(message)
                     }
                 }
@@ -80,8 +94,27 @@ final class ProviderPipelineController {
     func refreshOverlayContent(appState: AppState) {
         loadTask?.cancel()
         loadTask = nil
+        cancelTranslationTask(appState: appState)
         lastIntegratedVisibleLyricsRefresh = .distantPast
         prepareOverlayContent(appState: appState)
+    }
+
+    func refreshTranslation(appState: AppState) {
+        cancelTranslationTask(appState: appState)
+        appState.clearTranslation()
+        guard loadTask == nil else {
+            appState.setTranslationRuntimeState(.unavailable(reason: "Translation will wait for current lyrics"))
+            return
+        }
+        guard let requestedTrackID = appState.playerState.track?.id else {
+            appState.setTranslationRuntimeState(.unavailable(reason: "No current track"))
+            return
+        }
+        startTranslation(
+            for: appState.lyricsDocument,
+            requestedTrackID: requestedTrackID,
+            appState: appState
+        )
     }
 
     /// Live mode can receive transient empty playerInfo payloads while Music
@@ -89,23 +122,24 @@ final class ProviderPipelineController {
     /// playback layer has confirmed a real track identity change.
     func refreshOverlayContentForLiveTrack(appState: AppState) {
         guard appState.playerState.track != nil else {
-            cancelInFlightLoadPreservingState()
+            cancelInFlightLoadPreservingState(appState: appState)
             AppTelemetry.performance.info("Live provider refresh skipped for empty track payload")
             return
         }
         guard appState.isOverlayVisible || appState.runtimeFeatureFlags.allowsHiddenProviderRefresh else {
-            cancelInFlightLoadPreservingState()
+            cancelInFlightLoadPreservingState(appState: appState)
             AppTelemetry.performance.info("Live track refresh deferred while overlay hidden")
             return
         }
         refreshOverlayContent(appState: appState)
     }
 
-    func cancelInFlightLoadPreservingState() {
-        guard loadTask != nil else { return }
+    func cancelInFlightLoadPreservingState(appState: AppState) {
+        guard loadTask != nil || translationTask != nil else { return }
         AppTelemetry.performance.info("Provider pipeline load cancelled because live track payload is empty")
         loadTask?.cancel()
         loadTask = nil
+        cancelTranslationTask(appState: appState)
     }
 
     func refreshIntegratedVisibleLyrics(appState: AppState) {
@@ -115,6 +149,22 @@ final class ProviderPipelineController {
             observedAppState = nil
             return
         }
+        guard appState.providerRuntimeState != .loading else {
+            axObserver.stop()
+            observedAppState = nil
+            return
+        }
+
+        let current = appState.lyricsDocument
+        if Self.skipsIntegratedVisibleLyricsRefresh(for: current) {
+            // Authoritative timed document straight from Apple. Do not
+            // overwrite with a lagging AX scrape and do not calibrate —
+            // the TTML clock IS ground truth here.
+            axObserver.stop()
+            observedAppState = nil
+            return
+        }
+
         startAXObserverIfNeeded(appState: appState)
         performIntegratedVisibleLyricsRefresh(
             appState: appState,
@@ -130,6 +180,9 @@ final class ProviderPipelineController {
               appState.isLiveModeRunning else {
             return
         }
+        guard appState.providerRuntimeState != .loading else {
+            return
+        }
 
         let now = Date()
         guard now.timeIntervalSince(lastIntegratedVisibleLyricsRefresh) >= minimumInterval else {
@@ -139,9 +192,6 @@ final class ProviderPipelineController {
 
         let current = appState.lyricsDocument
         if Self.skipsIntegratedVisibleLyricsRefresh(for: current) {
-            // Authoritative timed document straight from Apple. Do not
-            // overwrite with a lagging AX scrape and do not calibrate —
-            // the TTML clock IS ground truth here.
             return
         }
         if current.source == .lrclib, current.isTimed {
@@ -162,6 +212,7 @@ final class ProviderPipelineController {
 
         appState.applyLyricsDocument(document)
         appState.applyProviderReady()
+        refreshTranslation(appState: appState)
         AppTelemetry.performance.info("Music.app UI lyric line refreshed")
     }
 
@@ -245,6 +296,7 @@ final class ProviderPipelineController {
     func stopHiddenWork(appState: AppState) {
         axObserver.stop()
         observedAppState = nil
+        cancelTranslationTask(appState: appState)
 
         guard loadTask != nil else {
             appState.setProviderRuntimeState(.idle)
@@ -257,29 +309,57 @@ final class ProviderPipelineController {
         appState.setProviderRuntimeState(.idle)
     }
 
-    private func loadTranslation(for document: LyricsDocument, appState: AppState) async {
+    private func startTranslation(
+        for document: LyricsDocument,
+        requestedTrackID: String,
+        appState: AppState
+    ) {
         guard appState.showsTranslation else {
-            appState.applyProviderReady()
+            appState.setTranslationRuntimeState(.unavailable(reason: "Translation hidden"))
             return
         }
+        guard translationTask == nil else { return }
 
-        let translationResult = await translationProvider.translation(
-            for: document,
-            targetLanguage: appState.preferredTranslationLanguage
-        )
-        guard !Task.isCancelled else {
-            return
-        }
+        appState.setTranslationRuntimeState(.checkingAvailability)
+        let targetLanguageIdentifier = appState.preferredTranslationLanguageIdentifier
+        translationTask = Task { @MainActor [weak self, weak appState] in
+            guard let self, let appState else { return }
+            defer {
+                self.translationTask = nil
+            }
 
-        switch translationResult {
-        case .available(let translation):
-            appState.applyTranslation(translation)
-            appState.applyProviderReady()
-        case .unavailable:
-            appState.clearTranslation()
-            appState.applyProviderReady()
-        case .failed(let message):
-            appState.applyProviderFailure(message)
+            appState.setTranslationRuntimeState(.translating)
+            let translationResult = await self.translationProvider.translation(
+                for: document,
+                targetLanguageIdentifier: targetLanguageIdentifier
+            )
+            guard !Task.isCancelled else {
+                return
+            }
+            guard appState.playerState.track?.id == requestedTrackID else {
+                AppTelemetry.performance.info("Translation result ignored because live track changed before translation completed")
+                return
+            }
+            guard appState.preferredTranslationLanguageIdentifier == targetLanguageIdentifier else {
+                AppTelemetry.performance.info("Translation result ignored because target language changed")
+                return
+            }
+
+            switch translationResult {
+            case .available(let translation):
+                appState.applyTranslation(translation)
+                appState.setTranslationRuntimeState(.ready)
+            case .status(let state):
+                appState.clearTranslation()
+                appState.setTranslationRuntimeState(state)
+            }
         }
+    }
+
+    private func cancelTranslationTask(appState: AppState) {
+        guard translationTask != nil else { return }
+        translationTask?.cancel()
+        translationTask = nil
+        appState.setTranslationRuntimeState(.unavailable(reason: "Translation cancelled"))
     }
 }
