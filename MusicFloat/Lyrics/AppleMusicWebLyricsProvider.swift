@@ -402,22 +402,52 @@ final class AppleMusicWebLyricsProvider {
         storefrontLanguage: String,
         endpoint: String
     ) -> LyricsDocument? {
-        let parseable = variants.compactMap { variant -> (TTMLVariant, LyricsDocument)? in
+        let parseable = variants.compactMap { variant -> (variant: TTMLVariant, document: LyricsDocument)? in
             guard !variant.ttml.isEmpty,
                   let document = TTMLParser.parse(ttml: variant.ttml) else {
                 return nil
             }
             return (variant, document)
         }
-        guard let selected = Self.selectBestTTML(
-            from: parseable.map(\.0),
+        guard let selected = Self.selectBestParsedTTML(
+            from: parseable,
             preferredLyricLanguage: preferredLyricLanguage(),
             storefrontLanguage: storefrontLanguage
-        ), let document = parseable.first(where: { $0.0 == selected })?.1 else {
+        ) else {
             return nil
         }
-        AppTelemetry.performance.info("AM web: selected endpoint=\(endpoint, privacy: .public) source=\(selected.source.rawValue, privacy: .public) language=\(selected.language ?? "unknown", privacy: .public)")
-        return document
+        AppTelemetry.performance.info(
+            "AM web: selected endpoint=\(endpoint, privacy: .public) source=\(selected.variant.source.rawValue, privacy: .public) language=\(selected.variant.language ?? "unknown", privacy: .public) syllable_count=\(Self.syllableCount(in: selected.document), privacy: .public)"
+        )
+        return selected.document
+    }
+
+    static func selectBestParsedTTML(
+        from candidates: [(variant: TTMLVariant, document: LyricsDocument)],
+        preferredLyricLanguage: String?,
+        storefrontLanguage: String
+    ) -> (variant: TTMLVariant, document: LyricsDocument)? {
+        guard !candidates.isEmpty else { return nil }
+
+        let syllableTimed = candidates.filter { syllableCount(in: $0.document) > 0 }
+        if !syllableTimed.isEmpty,
+           let selected = selectBestTTML(
+               from: syllableTimed.map { $0.variant },
+               preferredLyricLanguage: preferredLyricLanguage,
+               storefrontLanguage: storefrontLanguage
+           ),
+           let match = syllableTimed.first(where: { $0.variant == selected }) {
+            return match
+        }
+
+        guard let selected = selectBestTTML(
+            from: candidates.map { $0.variant },
+            preferredLyricLanguage: preferredLyricLanguage,
+            storefrontLanguage: storefrontLanguage
+        ) else {
+            return nil
+        }
+        return candidates.first { $0.variant == selected }
     }
 
     static func selectBestTTML(
@@ -448,6 +478,10 @@ final class AppleMusicWebLyricsProvider {
 
     private static func localizationCount(in variants: [TTMLVariant]) -> Int {
         variants.filter { $0.source == .localization }.count
+    }
+
+    private static func syllableCount(in document: LyricsDocument) -> Int {
+        document.lines.reduce(0) { $0 + $1.syllables.count }
     }
 
     private static func normalizedLanguage(_ language: String?) -> String? {

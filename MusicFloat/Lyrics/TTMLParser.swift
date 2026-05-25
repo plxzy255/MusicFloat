@@ -258,13 +258,47 @@ enum TTMLParser {
 
 private extension Character {
     var canStartInferredWordLikeSpan: Bool {
-        guard unicodeScalars.allSatisfy(\.isASCII) else { return false }
-        return isLetter || isNumber || self == "("
+        isWordOrNumber || isOpeningLyricPunctuation
     }
 
     var shouldSpaceBeforeNextWord: Bool {
-        guard unicodeScalars.allSatisfy(\.isASCII) else { return false }
-        return isLetter || isNumber || self == "," || self == "." || self == "!" || self == "?" || self == "'" || self == "’" || self == ")"
+        isWordOrNumber || isClosingLyricPunctuation || isSentencePunctuation
+    }
+
+    var isWordOrNumber: Bool {
+        (isLetter || isNumber) && !isUsuallyUnspacedLyricScript
+    }
+
+    var isOpeningLyricPunctuation: Bool {
+        self == "(" || self == "[" || self == "{" || self == "“" || self == "‘" || self == "\"" || self == "'"
+    }
+
+    var isClosingLyricPunctuation: Bool {
+        self == ")" || self == "]" || self == "}" || self == "”" || self == "’" || self == "\"" || self == "'"
+    }
+
+    var isSentencePunctuation: Bool {
+        self == "," || self == "." || self == "!" || self == "?" || self == ";" || self == ":" || self == "…" || self == "،" || self == "؛" || self == "؟"
+    }
+
+    var isUsuallyUnspacedLyricScript: Bool {
+        unicodeScalars.contains { scalar in
+            switch scalar.value {
+            case 0x3040...0x30FF, // Hiragana + Katakana
+                 0x31F0...0x31FF, // Katakana phonetic extensions
+                 0x3400...0x4DBF, // CJK extension A
+                 0x4E00...0x9FFF, // CJK unified ideographs
+                 0xAC00...0xD7AF, // Hangul syllables
+                 0x1100...0x11FF, // Hangul Jamo
+                 0x0E00...0x0E7F, // Thai
+                 0x0E80...0x0EFF, // Lao
+                 0x1780...0x17FF, // Khmer
+                 0x1000...0x109F: // Myanmar
+                return true
+            default:
+                return false
+            }
+        }
     }
 }
 

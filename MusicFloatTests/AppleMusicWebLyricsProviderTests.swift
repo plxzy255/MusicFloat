@@ -44,6 +44,21 @@ final class AppleMusicWebLyricsProviderTests: XCTestCase {
         XCTAssertEqual(query["extend"], "ttmlLocalizations")
     }
 
+    func testDedicatedEndpointPrefersSyllableTimedPrimaryOverLineTimedLocalization() async throws {
+        let stub = AppleMusicHTTPStub(responses: [
+            .storefront(language: "en-US"),
+            .dedicated(status: 200, ttml: syllableTTML(text: "Timed lyric"), localizations: [
+                "fr-FR": ttml(language: "fr-FR", text: "Preferred line")
+            ])
+        ])
+        let provider = provider(stub: stub, preferredLyricLanguage: "fr-FR")
+
+        let document = try await provider.lyrics(for: track())
+
+        XCTAssertEqual(document?.lines.first?.text, "Timed lyric")
+        XCTAssertEqual(document?.lines.first?.syllables.count, 2)
+    }
+
     func testFallsBackToBroadSongsEndpointWhenDedicatedEndpoint404s() async throws {
         let stub = AppleMusicHTTPStub(responses: [
             .storefront(language: "en-US"),
@@ -216,6 +231,24 @@ private func ttml(language: String? = nil, text: String) -> String {
       <body>
         <div>
           <p begin="0.000" end="2.000">\(text)</p>
+        </div>
+      </body>
+    </tt>
+    """
+}
+
+private func syllableTTML(language: String? = nil, text: String) -> String {
+    let languageAttribute = language.map { #" xml:lang="\#($0)""# } ?? ""
+    let split = text.split(separator: " ", maxSplits: 1).map(String.init)
+    let first = split.first ?? text
+    let second = split.dropFirst().first.map { " \($0)" } ?? ""
+    return """
+    <tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.apple.com/lyric-ttml-internal"\(languageAttribute) itunes:timing="Word">
+      <body>
+        <div>
+          <p begin="0.000" end="2.000">
+            <span begin="0.000" end="1.000">\(first)</span><span begin="1.000" end="2.000">\(second)</span>
+          </p>
         </div>
       </body>
     </tt>

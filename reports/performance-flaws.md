@@ -33,6 +33,23 @@ Keep raw traces out of git; cite run IDs from `reports/performance-runs.jsonl`.
 
 ## Resolved
 
+### PERF-005: AX lyrics fallback over-polls on visible-line misses
+
+- Status: resolved in next PR
+- First seen: live driven profiling for timed lyric refactor
+- Signal: when Apple Music web and LRCLIB missed, AX fallback notifications
+  repeatedly traversed Music.app's lyrics tree while the panel had no visible
+  lyric line, raising live sample CPU.
+- Affected modes: live overlay with AX fallback and missing web/LRCLIB lyrics
+- Evidence: `20260525-045803Z-live-Direct-Sample-e9179a5` reported avg CPU
+  11.27% and max CPU 36.9%; its live log showed dense repeated
+  `Music.app AX lyrics panel had no visible lyric line` entries.
+- Fix: observer-driven AX refreshes now use a 0.5s cooldown and back off to
+  1.25s after repeated visible-line misses.
+- Validation: `20260525-050037Z-live-Direct-Sample-e9179a5` reported avg CPU
+  5.38% and max CPU 35.5%; the startup/provider spike remained, but the AX
+  miss burst disappeared from the live log.
+
 ### PERF-004: Apple Translation links translation frameworks at overlay startup
 
 - Status: resolved in PR #13 follow-up

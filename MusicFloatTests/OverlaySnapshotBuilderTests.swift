@@ -48,6 +48,113 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
     }
 
     @MainActor
+    func testReadySnapshotBuildsPreviousActiveNextLyricWindow() {
+        let snapshot = LyricsOverlaySnapshotBuilder().makeSnapshot(
+            contentState: .ready,
+            playerState: playerState(elapsedTime: 11),
+            lyricsDocument: timedDocument(),
+            translation: lineTranslations(),
+            showsTranslation: true,
+            widthPreset: .medium
+        )
+
+        XCTAssertEqual(snapshot.lyricWindow.map(\.id), [0, 1, 2])
+        XCTAssertEqual(snapshot.lyricWindow.map(\.role), [.previous, .active, .next])
+        XCTAssertEqual(snapshot.lyricWindow.map(\.translationText), [nil, "Middle translated", nil])
+    }
+
+    @MainActor
+    func testReadySnapshotShowsNextLineBeforeFirstTimedLyricStarts() {
+        let snapshot = LyricsOverlaySnapshotBuilder().makeSnapshot(
+            contentState: .ready,
+            playerState: playerState(elapsedTime: 2),
+            lyricsDocument: timedDocument(),
+            translation: lineTranslations(),
+            showsTranslation: true,
+            widthPreset: .medium
+        )
+
+        XCTAssertNil(snapshot.activeLine)
+        XCTAssertEqual(snapshot.lyricWindow.map(\.id), [0])
+        XCTAssertEqual(snapshot.lyricWindow.map(\.role), [.next])
+        XCTAssertNil(snapshot.lyricWindow.first?.translationText)
+    }
+
+    @MainActor
+    func testReadySnapshotBuildsPreviousActiveWindowAtLastLine() {
+        let snapshot = LyricsOverlaySnapshotBuilder().makeSnapshot(
+            contentState: .ready,
+            playerState: playerState(elapsedTime: 21),
+            lyricsDocument: timedDocument(),
+            translation: lineTranslations(),
+            showsTranslation: true,
+            widthPreset: .medium
+        )
+
+        XCTAssertEqual(snapshot.lyricWindow.map(\.id), [1, 2])
+        XCTAssertEqual(snapshot.lyricWindow.map(\.role), [.previous, .active])
+        XCTAssertEqual(snapshot.lyricWindow.map(\.translationText), [nil, "Last translated"])
+    }
+
+    @MainActor
+    func testUntimedDocumentBuildsActiveNextLyricWindow() {
+        let document = LyricsDocument(
+            source: .musicApp,
+            lines: [
+                LyricLine(id: 10, text: "First untimed line", startTime: nil),
+                LyricLine(id: 11, text: "Second untimed line", startTime: nil)
+            ],
+            isTimed: false
+        )
+        let snapshot = LyricsOverlaySnapshotBuilder().makeSnapshot(
+            contentState: .ready,
+            playerState: playerState(elapsedTime: 120),
+            lyricsDocument: document,
+            translation: LyricTranslation(
+                targetLanguageIdentifier: "fr",
+                sourceLanguageIdentifier: "en",
+                lines: [
+                    TranslatedLyricLine(id: 0, sourceLineID: 10, text: "First translated"),
+                    TranslatedLyricLine(id: 1, sourceLineID: 11, text: "Second translated")
+                ]
+            ),
+            showsTranslation: true,
+            widthPreset: .medium
+        )
+
+        XCTAssertEqual(snapshot.lyricWindow.map(\.id), [10, 11])
+        XCTAssertEqual(snapshot.lyricWindow.map(\.role), [.active, .next])
+        XCTAssertEqual(snapshot.lyricWindow.map(\.translationText), ["First translated", nil])
+    }
+
+    @MainActor
+    func testLyricWindowUsesStableLineIDsAcrossRoleChanges() {
+        let document = timedDocument()
+        let translation = lineTranslations()
+        let before = LyricsOverlaySnapshotBuilder().makeSnapshot(
+            contentState: .ready,
+            playerState: playerState(elapsedTime: 2),
+            lyricsDocument: document,
+            translation: translation,
+            showsTranslation: true,
+            widthPreset: .medium
+        )
+        let during = LyricsOverlaySnapshotBuilder().makeSnapshot(
+            contentState: .ready,
+            playerState: playerState(elapsedTime: 11),
+            lyricsDocument: document,
+            translation: translation,
+            showsTranslation: true,
+            widthPreset: .medium
+        )
+
+        XCTAssertEqual(before.lyricWindow.first?.id, 0)
+        XCTAssertEqual(before.lyricWindow.first?.role, .next)
+        XCTAssertEqual(during.lyricWindow.first?.id, 0)
+        XCTAssertEqual(during.lyricWindow.first?.role, .previous)
+    }
+
+    @MainActor
     func testReadySnapshotAttributionShowsTranslatedSourceAndTarget() {
         let document = LyricsDocument(
             source: .appleMusicWeb,
@@ -132,6 +239,43 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
 
         XCTAssertNil(LyricsOverlaySnapshotBuilder.activeSyllableIndex(in: line, at: 0.75))
         XCTAssertEqual(LyricsOverlaySnapshotBuilder.activeSyllableIndex(in: line, at: 2.5), 1)
+    }
+
+    @MainActor
+    func testTimedLineProgressUsesWeightedSyllableTiming() throws {
+        let line = LyricLine(
+            id: 0,
+            text: "One two",
+            startTime: 10,
+            syllables: [
+                LyricSyllable(text: "One ", startTime: 10, endTime: 11),
+                LyricSyllable(text: "two", startTime: 11, endTime: 13)
+            ]
+        )
+
+        XCTAssertEqual(LyricsOverlaySnapshotBuilder.timedLineProgress(in: line, at: 9.5), 0)
+        XCTAssertEqual(LyricsOverlaySnapshotBuilder.timedLineProgress(in: line, at: 14), 1)
+        let activeProgress = try XCTUnwrap(LyricsOverlaySnapshotBuilder.timedLineProgress(in: line, at: 11.5))
+        XCTAssertEqual(activeProgress, 4.75 / 7.0, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testTimedLineProgressFallsBackToLineTiming() {
+        let line = LyricLine(
+            id: 0,
+            text: "Line timed lyric",
+            startTime: 10,
+            endTime: 14
+        )
+
+        XCTAssertEqual(LyricsOverlaySnapshotBuilder.timedLineProgress(in: line, at: 12), 0.5)
+    }
+
+    @MainActor
+    func testTimedLineProgressReturnsNilWithoutTiming() {
+        let line = LyricLine(id: 0, text: "Plain lyric", startTime: nil)
+
+        XCTAssertNil(LyricsOverlaySnapshotBuilder.timedLineProgress(in: line, at: 12))
     }
 
     @MainActor
@@ -236,5 +380,32 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
 
     private func languageName(_ identifier: String) -> String {
         Locale.current.localizedString(forIdentifier: identifier) ?? identifier
+    }
+
+    @MainActor
+    private func timedDocument() -> LyricsDocument {
+        LyricsDocument(
+            source: .appleMusicWeb,
+            lines: [
+                LyricLine(id: 0, text: "First timed line", startTime: 5),
+                LyricLine(id: 1, text: "Middle timed line", startTime: 10),
+                LyricLine(id: 2, text: "Last timed line", startTime: 20)
+            ],
+            isTimed: true,
+            sourceLanguageIdentifier: "en"
+        )
+    }
+
+    @MainActor
+    private func lineTranslations() -> LyricTranslation {
+        LyricTranslation(
+            targetLanguageIdentifier: "fr",
+            sourceLanguageIdentifier: "en",
+            lines: [
+                TranslatedLyricLine(id: 0, sourceLineID: 0, text: "First translated"),
+                TranslatedLyricLine(id: 1, sourceLineID: 1, text: "Middle translated"),
+                TranslatedLyricLine(id: 2, sourceLineID: 2, text: "Last translated")
+            ]
+        )
     }
 }

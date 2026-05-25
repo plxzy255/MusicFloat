@@ -150,21 +150,8 @@ struct LyricsOverlayView: View {
 
     @ViewBuilder
     private func lyricBlock(for snapshot: LyricsOverlaySnapshot) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            lyricText(for: snapshot)
-                .font(.system(.title2, design: .rounded, weight: .semibold))
-                .lineLimit(2)
-                .minimumScaleFactor(0.78)
-
-            if let translationText = snapshot.translationText {
-                Text(translationText)
-                    .font(.system(.body, design: .rounded))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.82)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        LyricsLineStackView(snapshot: snapshot)
+            .frame(maxWidth: .infinity, minHeight: 82, alignment: .center)
     }
 
     @ViewBuilder
@@ -469,48 +456,230 @@ struct LyricsOverlayView: View {
         }
     }
 
-    private func lyricText(for snapshot: LyricsOverlaySnapshot) -> Text {
-        guard let activeLine = snapshot.activeLine, !activeLine.syllables.isEmpty else {
-            return Text(snapshot.lyricText)
-                .foregroundStyle(.primary)
+}
+
+private struct LyricsLineStackView: View {
+    let snapshot: LyricsOverlaySnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if snapshot.lyricWindow.isEmpty {
+                LyricsFallbackLineView(snapshot: snapshot)
+            } else {
+                ForEach(snapshot.lyricWindow) { row in
+                    LyricsOverlayLineRowView(
+                        row: row,
+                        effectiveLyricTime: snapshot.effectiveLyricTime
+                    )
+                        .id(row.id)
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .bottom),
+                            removal: .move(edge: .top)
+                        ))
+                }
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(.smooth(duration: 0.34), value: snapshot.lyricWindow)
+    }
+}
 
-        let activeIndex = LyricsOverlaySnapshotBuilder.activeSyllableIndex(
-            in: activeLine,
-            at: snapshot.effectiveLyricTime
-        )
+private struct LyricsFallbackLineView: View {
+    let snapshot: LyricsOverlaySnapshot
 
-        return Text(styledSyllables(activeLine.syllables, activeIndex: activeIndex))
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(snapshot.lyricText)
+                .font(.system(.title3, design: .rounded, weight: .semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+                .minimumScaleFactor(0.78)
+
+            if let translationText = snapshot.translationText {
+                Text(translationText)
+                    .font(.system(.callout, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct LyricsOverlayLineRowView: View {
+    let row: LyricsOverlayLine
+    let effectiveLyricTime: TimeInterval
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            TimedLyricTextView(
+                line: row.line,
+                role: row.role,
+                effectiveLyricTime: effectiveLyricTime
+            )
+
+            if let translationText = row.translationText {
+                Text(translationText)
+                    .font(.system(.callout, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .opacity(row.role.opacity)
+        .scaleEffect(row.role.scale, anchor: .leading)
+        .accessibilityAddTraits(row.role == .active ? .isSelected : [])
+    }
+}
+
+private struct TimedLyricTextView: View {
+    let line: LyricLine
+    let role: LyricsOverlayLineRole
+    let effectiveLyricTime: TimeInterval
+    @State private var animatedProgress: Double?
+
+    var body: some View {
+        Group {
+            if let progress,
+               role == .active {
+                progressText(progress: animatedProgress ?? progress)
+            } else {
+                plainText
+            }
+        }
+        .onAppear {
+            startProgressAnimation()
+        }
+        .onChange(of: progressAnimationIdentity) {
+            startProgressAnimation()
+        }
     }
 
-    private func styledSyllables(
-        _ syllables: [LyricSyllable],
-        activeIndex: Int?
-    ) -> AttributedString {
-        var text = AttributedString()
+    private var progress: Double? {
+        LyricsOverlaySnapshotBuilder.timedLineProgress(
+            in: line,
+            at: effectiveLyricTime
+        )
+    }
 
-        for index in syllables.indices {
-            var segment = AttributedString(syllables[index].text)
+    private var plainText: some View {
+        Text(line.text)
+            .font(role.lyricFont)
+            .foregroundStyle(role == .active ? .primary : .secondary)
+            .lineLimit(role == .active ? 2 : 1)
+            .minimumScaleFactor(role == .active ? 0.78 : 0.86)
+            .contentTransition(.opacity)
+    }
 
-            guard let activeIndex else {
-                segment.foregroundColor = .secondary
-                text += segment
-                continue
+    private func progressText(progress: Double) -> some View {
+        plainText
+            .foregroundStyle(.secondary.opacity(0.62))
+            .overlay(alignment: fillAlignment) {
+                GeometryReader { proxy in
+                    plainText
+                        .foregroundStyle(.primary)
+                        .frame(
+                            width: proxy.size.width,
+                            height: proxy.size.height,
+                            alignment: fillAlignment
+                        )
+                        .mask(alignment: fillAlignment) {
+                            Rectangle()
+                                .frame(width: max(1, proxy.size.width * CGFloat(progress)))
+                        }
+                }
+                .allowsHitTesting(false)
             }
+    }
 
-            if index < activeIndex {
-                segment.foregroundColor = .primary.opacity(0.62)
-            } else if index == activeIndex {
-                segment.foregroundColor = .primary
-                segment.inlinePresentationIntent = .stronglyEmphasized
-            } else {
-                segment.foregroundColor = .secondary
-            }
+    private var progressAnimationIdentity: String {
+        "\(line.id)-\(role)-\(line.startTime ?? -1)-\(line.endTime ?? -1)"
+    }
 
-            text += segment
+    private func startProgressAnimation() {
+        guard role == .active,
+              let progress else {
+            animatedProgress = nil
+            return
         }
 
-        return text
+        animatedProgress = progress
+        guard let endTime = progressEndTime else { return }
+        let remainingDuration = max(0, endTime - effectiveLyricTime)
+        guard remainingDuration > 0.05 else {
+            animatedProgress = 1
+            return
+        }
+
+        withAnimation(.linear(duration: remainingDuration)) {
+            animatedProgress = 1
+        }
+    }
+
+    private var progressEndTime: TimeInterval? {
+        if !line.syllables.isEmpty {
+            return line.syllables.map(\.endTime).max()
+        }
+        return line.endTime
+    }
+
+    private var fillAlignment: Alignment {
+        line.text.prefersRightToLeftLyricFill ? .trailing : .leading
+    }
+}
+
+private extension LyricsOverlayLineRole {
+    var lyricFont: Font {
+        switch self {
+        case .previous, .next:
+            .system(.callout, design: .rounded, weight: .medium)
+        case .active:
+            .system(.title3, design: .rounded, weight: .semibold)
+        }
+    }
+
+    var opacity: Double {
+        switch self {
+        case .previous, .next:
+            0.54
+        case .active:
+            1
+        }
+    }
+
+    var scale: CGFloat {
+        switch self {
+        case .previous, .next:
+            0.97
+        case .active:
+            1
+        }
+    }
+}
+
+private extension String {
+    var prefersRightToLeftLyricFill: Bool {
+        unicodeScalars.first(where: { scalar in
+            CharacterSet.letters.contains(scalar)
+        })?.isRightToLeftLyricScalar == true
+    }
+}
+
+private extension UnicodeScalar {
+    var isRightToLeftLyricScalar: Bool {
+        switch value {
+        case 0x0590...0x05FF, // Hebrew
+             0x0600...0x06FF, // Arabic
+             0x0750...0x077F, // Arabic Supplement
+             0x08A0...0x08FF, // Arabic Extended-A
+             0xFB50...0xFDFF, // Arabic Presentation Forms-A
+             0xFE70...0xFEFF: // Arabic Presentation Forms-B
+            return true
+        default:
+            return false
+        }
     }
 }
 

@@ -9,7 +9,9 @@ final class ProviderPipelineController {
     private static let integratedVisibleLyricsRefreshInterval: TimeInterval = 2.0
     /// Cooldown after an AX-observer-driven refresh, so a burst of
     /// notifications doesn't translate into a burst of full AX traversals.
-    private static let observerDrivenCooldown: TimeInterval = 0.1
+    private static let observerDrivenCooldown: TimeInterval = 0.5
+    private static let visibleLyricsMissBackoffThreshold = 3
+    private static let visibleLyricsMissBackoffInterval: TimeInterval = 1.25
 
     private let lyricsProvider: any LyricsProvider
     private let translationProvider: any TranslationProvider
@@ -17,6 +19,7 @@ final class ProviderPipelineController {
     private var translationTask: Task<Void, Never>?
     private var loadingTrackID: String?
     private var lastIntegratedVisibleLyricsRefresh = Date.distantPast
+    private var consecutiveIntegratedVisibleLyricsMisses = 0
     private let axObserver = MusicAppAXObserver()
     private weak var observedAppState: AppState?
 
@@ -113,6 +116,7 @@ final class ProviderPipelineController {
         loadingTrackID = nil
         cancelTranslationTask(appState: appState)
         lastIntegratedVisibleLyricsRefresh = .distantPast
+        consecutiveIntegratedVisibleLyricsMisses = 0
         prepareOverlayContent(appState: appState)
     }
 
@@ -203,7 +207,11 @@ final class ProviderPipelineController {
         }
 
         let now = Date()
-        guard now.timeIntervalSince(lastIntegratedVisibleLyricsRefresh) >= minimumInterval else {
+        let effectiveMinimumInterval = Self.integratedVisibleLyricsMinimumInterval(
+            base: minimumInterval,
+            consecutiveMisses: consecutiveIntegratedVisibleLyricsMisses
+        )
+        guard now.timeIntervalSince(lastIntegratedVisibleLyricsRefresh) >= effectiveMinimumInterval else {
             return
         }
         lastIntegratedVisibleLyricsRefresh = now
@@ -217,14 +225,21 @@ final class ProviderPipelineController {
             // the LRC clock to it instead of replacing the (multi-line, timed)
             // document with a single-line scrape.
             guard let axText = MusicAppLyricsProvider.fetchCurrentVisibleLyricsLineText() else {
+                noteIntegratedVisibleLyricsMiss()
                 return
             }
+            noteIntegratedVisibleLyricsHit()
             calibrateLRCDocument(current: current, visibleLineText: axText, appState: appState)
             return
         }
 
-        guard let document = MusicAppLyricsProvider.fetchCurrentVisibleLyricsLineDocument(),
-              document.lines.first?.text != current.lines.first?.text else {
+        guard let document = MusicAppLyricsProvider.fetchCurrentVisibleLyricsLineDocument() else {
+            noteIntegratedVisibleLyricsMiss()
+            return
+        }
+        noteIntegratedVisibleLyricsHit()
+
+        guard document.lines.first?.text != current.lines.first?.text else {
             return
         }
 
@@ -232,6 +247,27 @@ final class ProviderPipelineController {
         appState.applyProviderReady()
         refreshTranslation(appState: appState)
         AppTelemetry.performance.info("Music.app UI lyric line refreshed")
+    }
+
+    static func integratedVisibleLyricsMinimumInterval(
+        base: TimeInterval,
+        consecutiveMisses: Int
+    ) -> TimeInterval {
+        guard consecutiveMisses >= visibleLyricsMissBackoffThreshold else {
+            return base
+        }
+        return max(base, visibleLyricsMissBackoffInterval)
+    }
+
+    private func noteIntegratedVisibleLyricsMiss() {
+        consecutiveIntegratedVisibleLyricsMisses = min(
+            consecutiveIntegratedVisibleLyricsMisses + 1,
+            Self.visibleLyricsMissBackoffThreshold
+        )
+    }
+
+    private func noteIntegratedVisibleLyricsHit() {
+        consecutiveIntegratedVisibleLyricsMisses = 0
     }
 
     private func calibrateLRCDocument(
@@ -314,6 +350,7 @@ final class ProviderPipelineController {
     func stopHiddenWork(appState: AppState) {
         axObserver.stop()
         observedAppState = nil
+        consecutiveIntegratedVisibleLyricsMisses = 0
         cancelTranslationTask(appState: appState)
 
         guard loadTask != nil else {

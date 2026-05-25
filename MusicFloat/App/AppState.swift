@@ -53,6 +53,22 @@ enum OverlayContentState: Equatable, Sendable {
     }
 }
 
+enum LyricsOverlayLineRole: Equatable, Sendable {
+    case previous
+    case active
+    case next
+}
+
+struct LyricsOverlayLine: Equatable, Identifiable, Sendable {
+    let line: LyricLine
+    let role: LyricsOverlayLineRole
+    let translationText: String?
+
+    var id: LyricLine.ID {
+        line.id
+    }
+}
+
 struct LyricsOverlaySnapshot: Equatable, Sendable {
     let contentState: OverlayContentState
     let statusText: String
@@ -60,6 +76,7 @@ struct LyricsOverlaySnapshot: Equatable, Sendable {
     let lyricText: String
     let activeLine: LyricLine?
     let effectiveLyricTime: TimeInterval
+    let lyricWindow: [LyricsOverlayLine]
     let translationText: String?
     let attributionText: String
     let widthPreset: OverlayWidthPreset
@@ -84,6 +101,20 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
         }
     }
 
+    static func timedLineProgress(in line: LyricLine, at effectiveLyricTime: TimeInterval) -> Double? {
+        if !line.syllables.isEmpty {
+            return syllableProgress(in: line.syllables, at: effectiveLyricTime)
+        }
+
+        guard let startTime = line.startTime,
+              let endTime = line.endTime,
+              endTime > startTime else {
+            return nil
+        }
+
+        return clampedProgress((effectiveLyricTime - startTime) / (endTime - startTime))
+    }
+
     func makeSnapshot(
         contentState: OverlayContentState,
         playerState: PlayerState,
@@ -104,6 +135,7 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
                 lyricText: "Listening for a mock playback snapshot...",
                 activeLine: nil,
                 effectiveLyricTime: playerState.elapsedTime + lyricOffsetSeconds + lyricsDocument.offsetCorrection,
+                lyricWindow: [],
                 translationText: nil,
                 attributionText: "Mock pipeline",
                 widthPreset: widthPreset
@@ -116,6 +148,7 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
                 lyricText: "Lyrics unavailable for this track",
                 activeLine: nil,
                 effectiveLyricTime: playerState.elapsedTime + lyricOffsetSeconds + lyricsDocument.offsetCorrection,
+                lyricWindow: [],
                 translationText: showsTranslation ? "Translation will wait for lyrics" : nil,
                 attributionText: "No provider result",
                 widthPreset: widthPreset
@@ -128,6 +161,7 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
                 lyricText: message,
                 activeLine: nil,
                 effectiveLyricTime: playerState.elapsedTime + lyricOffsetSeconds + lyricsDocument.offsetCorrection,
+                lyricWindow: [],
                 translationText: nil,
                 attributionText: "Mock failure state",
                 widthPreset: widthPreset
@@ -142,6 +176,13 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
             let translationText = activeLine.flatMap { line in
                 showsTranslation ? translation.text(for: line) : nil
             }
+            let lyricWindow = Self.lyricWindow(
+                in: lyricsDocument,
+                activeLine: activeLine,
+                effectiveLyricTime: effectiveLyricTime,
+                translation: translation,
+                showsTranslation: showsTranslation
+            )
 
             return LyricsOverlaySnapshot(
                 contentState: contentState,
@@ -150,6 +191,7 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
                 lyricText: lyricText,
                 activeLine: activeLine,
                 effectiveLyricTime: effectiveLyricTime,
+                lyricWindow: lyricWindow,
                 translationText: translationText,
                 attributionText: Self.attributionText(
                     lyricsDocument: lyricsDocument,
@@ -159,6 +201,105 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
                 widthPreset: widthPreset
             )
         }
+    }
+
+    private static func lyricWindow(
+        in document: LyricsDocument,
+        activeLine: LyricLine?,
+        effectiveLyricTime: TimeInterval,
+        translation: LyricTranslation,
+        showsTranslation: Bool
+    ) -> [LyricsOverlayLine] {
+        guard !document.lines.isEmpty else {
+            return []
+        }
+
+        guard let activeLine,
+              let activeIndex = document.lines.firstIndex(where: { $0.id == activeLine.id }) else {
+            guard document.isTimed,
+                  let nextIndex = document.lines.firstIndex(where: { line in
+                      guard let startTime = line.startTime else { return false }
+                      return startTime > effectiveLyricTime
+                  }) else {
+                return []
+            }
+            return [
+                LyricsOverlayLine(
+                    line: document.lines[nextIndex],
+                    role: .next,
+                    translationText: nil
+                )
+            ]
+        }
+
+        let lowerBound = max(0, activeIndex - 1)
+        let upperBound = min(document.lines.count - 1, activeIndex + 1)
+
+        return (lowerBound...upperBound).map { index in
+            let role: LyricsOverlayLineRole
+            if index < activeIndex {
+                role = .previous
+            } else if index == activeIndex {
+                role = .active
+            } else {
+                role = .next
+            }
+
+            let line = document.lines[index]
+            return LyricsOverlayLine(
+                line: line,
+                role: role,
+                translationText: role == .active && showsTranslation ? translation.text(for: line) : nil
+            )
+        }
+    }
+
+    private static func syllableProgress(
+        in syllables: [LyricSyllable],
+        at effectiveLyricTime: TimeInterval
+    ) -> Double? {
+        guard let firstStart = syllables.map(\.startTime).min(),
+              let lastEnd = syllables.map(\.endTime).max(),
+              lastEnd > firstStart else {
+            return nil
+        }
+
+        if effectiveLyricTime <= firstStart {
+            return 0
+        }
+        if effectiveLyricTime >= lastEnd {
+            return 1
+        }
+
+        let weightedSyllables = syllables.map { syllable in
+            (syllable, Double(max(1, syllable.text.count)))
+        }
+        let totalWeight = weightedSyllables.reduce(0) { $0 + $1.1 }
+        guard totalWeight > 0 else {
+            return nil
+        }
+
+        var completedWeight = 0.0
+        for (syllable, weight) in weightedSyllables {
+            if effectiveLyricTime >= syllable.endTime {
+                completedWeight += weight
+                continue
+            }
+
+            if effectiveLyricTime <= syllable.startTime {
+                return clampedProgress(completedWeight / totalWeight)
+            }
+
+            let duration = max(0.001, syllable.endTime - syllable.startTime)
+            let syllableProgress = clampedProgress((effectiveLyricTime - syllable.startTime) / duration)
+            return clampedProgress((completedWeight + weight * syllableProgress) / totalWeight)
+        }
+
+        return 1
+    }
+
+    private static func clampedProgress(_ value: Double) -> Double {
+        min(1, max(0, value))
     }
 
     private static func attributionText(
