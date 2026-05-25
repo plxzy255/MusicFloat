@@ -12,8 +12,8 @@ struct LyricLine: Equatable, Identifiable, Sendable {
     let startTime: TimeInterval?
     let endTime: TimeInterval?
     /// Word/syllable timings when the source carries them (Apple Music TTML).
-    /// Populated but not rendered yet — kept so a future karaoke-style
-    /// per-syllable overlay can ship without re-fetching.
+    /// Drives the active-line fill when available; line timing remains the
+    /// fallback for providers that only expose sentence-level sync.
     let syllables: [LyricSyllable]
 
     init(

@@ -542,13 +542,14 @@ private struct TimedLyricTextView: View {
 
     var body: some View {
         Group {
-            if let progress,
+            if let displayProgress,
                role == .active {
-                progressText(progress: animatedProgress ?? progress)
+                progressText(progress: displayProgress)
             } else {
                 plainText
             }
         }
+        .animation(syllableProgressAnimation, value: progress ?? -1)
         .onAppear {
             startProgressAnimation()
         }
@@ -562,6 +563,20 @@ private struct TimedLyricTextView: View {
             in: line,
             at: effectiveLyricTime
         )
+    }
+
+    private var displayProgress: Double? {
+        guard let progress else { return nil }
+        guard !usesSyllableTiming else { return progress }
+        return animatedProgress ?? progress
+    }
+
+    private var usesSyllableTiming: Bool {
+        !line.syllables.isEmpty
+    }
+
+    private var syllableProgressAnimation: Animation? {
+        usesSyllableTiming && role == .active ? .linear(duration: 0.10) : nil
     }
 
     private var plainText: some View {
@@ -595,12 +610,17 @@ private struct TimedLyricTextView: View {
     }
 
     private var progressAnimationIdentity: String {
-        "\(line.id)-\(role)-\(line.startTime ?? -1)-\(line.endTime ?? -1)"
+        "\(line.id)-\(role)-\(line.startTime ?? -1)-\(line.endTime ?? -1)-\(usesSyllableTiming)"
     }
 
     private func startProgressAnimation() {
         guard role == .active,
               let progress else {
+            animatedProgress = nil
+            return
+        }
+
+        guard !usesSyllableTiming else {
             animatedProgress = nil
             return
         }
@@ -619,9 +639,6 @@ private struct TimedLyricTextView: View {
     }
 
     private var progressEndTime: TimeInterval? {
-        if !line.syllables.isEmpty {
-            return line.syllables.map(\.endTime).max()
-        }
         return line.endTime
     }
 

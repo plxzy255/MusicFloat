@@ -132,6 +132,46 @@ final class AppleTranslationProviderTests: XCTestCase {
         )))
     }
 
+    func testUnsupportedInferredSourceIsRejectedBeforeAvailabilityPreflight() async {
+        var checkedAvailability = false
+        var translated = false
+        let provider = AppleTranslationProvider(dependencies: .init(
+            availability: { _, _ in
+                checkedAvailability = true
+                return .installed
+            },
+            translate: { _, _, _ in
+                translated = true
+                return []
+            },
+            inferSourceLanguageIdentifier: { _ in "ca" },
+            supportedLanguages: {
+                [
+                    Locale.Language(identifier: "en"),
+                    Locale.Language(identifier: "fr")
+                ]
+            }
+        ))
+
+        let result = await provider.translation(
+            for: document(
+                lines: [
+                    LyricLine(
+                        id: 5,
+                        text: "Anys mes tard, era prop del Scandalo",
+                        startTime: nil
+                    )
+                ],
+                sourceLanguageIdentifier: "en"
+            ),
+            targetLanguageIdentifier: "en"
+        )
+
+        XCTAssertEqual(result, .status(.unsupported(source: "ca", target: "en")))
+        XCTAssertFalse(checkedAvailability)
+        XCTAssertFalse(translated)
+    }
+
     func testMissingSourceDetectionReturnsUnavailable() async {
         let provider = AppleTranslationProvider(dependencies: .init(
             availability: { _, _ in XCTFail("Missing source should not check availability"); return .installed },

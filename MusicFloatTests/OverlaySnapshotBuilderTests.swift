@@ -260,6 +260,25 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
     }
 
     @MainActor
+    func testTimedLineProgressPrefersSyllableClockOverLinearLineTiming() throws {
+        let line = LyricLine(
+            id: 0,
+            text: "Quick slow",
+            startTime: 0,
+            endTime: 4,
+            syllables: [
+                LyricSyllable(text: "Quick ", startTime: 0, endTime: 0.5),
+                LyricSyllable(text: "slow", startTime: 0.5, endTime: 4)
+            ]
+        )
+
+        let progress = try XCTUnwrap(LyricsOverlaySnapshotBuilder.timedLineProgress(in: line, at: 1))
+
+        XCTAssertGreaterThan(progress, 0.60)
+        XCTAssertEqual(progress, (6.0 + (4.0 * (0.5 / 3.5))) / 10.0, accuracy: 0.0001)
+    }
+
+    @MainActor
     func testTimedLineProgressFallsBackToLineTiming() {
         let line = LyricLine(
             id: 0,

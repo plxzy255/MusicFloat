@@ -158,6 +158,7 @@ final class AppleTranslationProvider: TranslationProvider {
         var inferSourceLanguageIdentifier: @MainActor ([LyricLine]) -> String? = { lines in
             AppleTranslationProvider.inferSourceLanguageIdentifier(from: lines)
         }
+        var supportedLanguages: @MainActor () async -> [Locale.Language] = { [] }
 
         static let live = Dependencies(
             availability: { source, target in
@@ -172,6 +173,9 @@ final class AppleTranslationProvider: TranslationProvider {
             },
             inferSourceLanguageIdentifier: { lines in
                 AppleTranslationProvider.inferSourceLanguageIdentifier(from: lines)
+            },
+            supportedLanguages: {
+                await AppleTranslationProvider.liveSupportedLanguages()
             }
         )
     }
@@ -202,6 +206,15 @@ final class AppleTranslationProvider: TranslationProvider {
         _ = source
         _ = target
         return .unsupported
+        #endif
+    }
+
+    nonisolated private static func liveSupportedLanguages() async -> [Locale.Language] {
+        #if ENABLE_APPLE_TRANSLATION
+        let availability = LanguageAvailability(preferredStrategy: .lowLatency)
+        return await availability.supportedLanguages
+        #else
+        return []
         #endif
     }
 
@@ -281,6 +294,16 @@ final class AppleTranslationProvider: TranslationProvider {
         let sourceLanguage = Locale.Language(identifier: normalizedSource)
         if Self.sameLanguageFamily(sourceLanguage, targetLanguage) {
             return .status(.sourceEqualsTarget)
+        }
+
+        let supportedLanguages = await dependencies.supportedLanguages()
+        guard supportedLanguages.isEmpty
+                || (Self.isLanguageSupportedByTranslation(sourceLanguage, supportedLanguages: supportedLanguages)
+                    && Self.isLanguageSupportedByTranslation(targetLanguage, supportedLanguages: supportedLanguages)) else {
+            AppTelemetry.performance.notice(
+                "Apple translation unsupported language source=\(normalizedSource, privacy: .public) target=\(normalizedTarget, privacy: .public)"
+            )
+            return .status(.unsupported(source: normalizedSource, target: normalizedTarget))
         }
 
         let availability = await dependencies.availability(sourceLanguage, targetLanguage)
@@ -382,6 +405,16 @@ final class AppleTranslationProvider: TranslationProvider {
             return "Translation failed"
         }
         return "Translation failed: \(detail)"
+    }
+
+    private static func isLanguageSupportedByTranslation(
+        _ language: Locale.Language,
+        supportedLanguages: [Locale.Language]
+    ) -> Bool {
+        supportedLanguages.contains { supportedLanguage in
+            supportedLanguage.minimalIdentifier == language.minimalIdentifier
+                || sameLanguageFamily(supportedLanguage, language)
+        }
     }
 
     private static func sameLanguageFamily(_ source: Locale.Language, _ target: Locale.Language) -> Bool {
