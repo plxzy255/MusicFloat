@@ -551,6 +551,7 @@ private struct MusicPlaybackProgressSlider: View {
         }
         .frame(minHeight: 18)
         .opacity(isEnabled ? 1 : 0.55)
+        .disabled(!isEnabled)
         .accessibilityValue("\(Int((normalizedProgress * 100).rounded())) percent")
         .accessibilityAdjustableAction { direction in
             adjustValue(direction)
