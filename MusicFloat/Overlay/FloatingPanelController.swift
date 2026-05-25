@@ -6,10 +6,16 @@ import SwiftUI
 final class FloatingPanelController {
     private var panel: NSPanel?
 
-    func show(appState: AppState) {
+    func show(
+        appState: AppState,
+        onTranslationPreparationCompleted: @escaping () -> Void = {}
+    ) {
         AppTelemetry.measure("FloatingPanelShow") {
             let didCreatePanel = panel == nil
-            let panel = panel ?? makePanel(appState: appState)
+            let panel = panel ?? makePanel(
+                appState: appState,
+                onTranslationPreparationCompleted: onTranslationPreparationCompleted
+            )
             self.panel = panel
             applySize(appState: appState, to: panel)
 
@@ -38,7 +44,10 @@ final class FloatingPanelController {
         panel.contentView?.frame = NSRect(origin: .zero, size: panelSize)
     }
 
-    private func makePanel(appState: AppState) -> NSPanel {
+    private func makePanel(
+        appState: AppState,
+        onTranslationPreparationCompleted: @escaping () -> Void
+    ) -> NSPanel {
         AppTelemetry.measure("FloatingPanelCreate") {
             AppTelemetry.windowing.info("Create floating panel")
             let panelWidth = CGFloat(appState.overlayWidthPreset.width)
@@ -58,7 +67,10 @@ final class FloatingPanelController {
             panel.isOpaque = false
             panel.hasShadow = true
 
-            let hostingView = NSHostingView(rootView: LyricsOverlayView(appState: appState))
+            let hostingView = NSHostingView(rootView: LyricsOverlayView(
+                appState: appState,
+                onTranslationPreparationCompleted: onTranslationPreparationCompleted
+            ))
             hostingView.frame = NSRect(x: 0, y: 0, width: panelWidth, height: 172)
             hostingView.autoresizingMask = [.width, .height]
             panel.contentView = hostingView

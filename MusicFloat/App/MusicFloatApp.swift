@@ -30,7 +30,6 @@ struct MusicFloatApp: App {
             AppTelemetry.lifecycle.info("Live mode requested — auto-starting Live Apple Music mode and overlay in 500ms")
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(500)) { [self] in
                 toggleLiveAppleMusic()
-                toggleOverlay()
             }
         }
     }
@@ -70,7 +69,10 @@ struct MusicFloatApp: App {
                 playerController.startMockPreview(appState: appState)
             }
             activeProviderPipelineController.prepareOverlayContent(appState: appState)
-            panelController.show(appState: appState)
+            panelController.show(
+                appState: appState,
+                onTranslationPreparationCompleted: { [self] in retryTranslationAfterPreparation() }
+            )
             playerController.overlayVisibilityChanged(true, appState: appState)
         } else {
             mockProviderPipelineController.stopHiddenWork(appState: appState)
@@ -97,6 +99,7 @@ struct MusicFloatApp: App {
         } else {
             let liveProviderPipelineController = getLiveProviderPipelineController()
             appState.runtimeFeatureFlags = .liveAppleMusic
+            showOverlayForLiveAppleMusicIfNeeded()
             playerController.startLiveAppleMusic(appState: appState) { [appState, liveProviderPipelineController] track in
                 guard track != nil else {
                     AppTelemetry.performance.info("Live track payload empty; preserving current lyrics state")
@@ -113,6 +116,17 @@ struct MusicFloatApp: App {
                 liveProviderPipelineController.refreshIntegratedVisibleLyrics(appState: appState)
             }
         }
+    }
+
+    private func showOverlayForLiveAppleMusicIfNeeded() {
+        guard !appState.isOverlayVisible else { return }
+        appState.isOverlayVisible = true
+        AppTelemetry.windowing.notice("Showing lyrics overlay for Live Apple Music")
+        panelController.show(
+            appState: appState,
+            onTranslationPreparationCompleted: { [self] in retryTranslationAfterPreparation() }
+        )
+        playerController.overlayVisibilityChanged(true, appState: appState)
     }
 
     private func resetMockPlayback() {

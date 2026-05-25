@@ -150,10 +150,48 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
                 activeLine: activeLine,
                 effectiveLyricTime: effectiveLyricTime,
                 translationText: translationText,
-                attributionText: "\(lyricsDocument.attribution) - \(Self.localizedLanguageName(for: translation.targetLanguageIdentifier))",
+                attributionText: Self.attributionText(
+                    lyricsDocument: lyricsDocument,
+                    translation: translation,
+                    showsTranslation: showsTranslation
+                ),
                 widthPreset: widthPreset
             )
         }
+    }
+
+    private static func attributionText(
+        lyricsDocument: LyricsDocument,
+        translation: LyricTranslation,
+        showsTranslation: Bool
+    ) -> String {
+        let sourceLanguageIdentifier = translation.sourceLanguageIdentifier
+            ?? lyricsDocument.sourceLanguageIdentifier
+        guard let sourceLanguageIdentifier else {
+            return lyricsDocument.attribution
+        }
+
+        let sourceName = localizedLanguageName(for: sourceLanguageIdentifier)
+        guard showsTranslation,
+              !sameLanguageFamily(sourceLanguageIdentifier, translation.targetLanguageIdentifier) else {
+            return "\(lyricsDocument.attribution) - \(sourceName)"
+        }
+
+        let targetName = localizedLanguageName(for: translation.targetLanguageIdentifier)
+        return "\(lyricsDocument.attribution) - \(sourceName) to \(targetName)"
+    }
+
+    private static func sameLanguageFamily(_ lhs: String, _ rhs: String) -> Bool {
+        let lhsLanguage = Locale.Language(identifier: lhs)
+        let rhsLanguage = Locale.Language(identifier: rhs)
+        if lhsLanguage.minimalIdentifier == rhsLanguage.minimalIdentifier {
+            return true
+        }
+        guard let lhsCode = lhsLanguage.languageCode?.identifier,
+              let rhsCode = rhsLanguage.languageCode?.identifier else {
+            return false
+        }
+        return lhsCode == rhsCode
     }
 
     private static func localizedLanguageName(for identifier: String) -> String {

@@ -66,7 +66,7 @@ struct MenuBarView: View {
         Divider()
 
         Button(appState.isLiveModeRunning ? "Stop Listening to Apple Music" : "Listen to Apple Music") {
-            AppTelemetry.menuBar.info("Toggle live Apple Music requested running=\(!appState.isLiveModeRunning)")
+            AppTelemetry.menuBar.notice("Toggle live Apple Music requested running=\(!appState.isLiveModeRunning)")
             toggleLiveAppleMusic()
         }
 

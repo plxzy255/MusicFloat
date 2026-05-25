@@ -377,6 +377,59 @@ final class AppleTranslationProvider: TranslationProvider {
     }
 }
 
+#if ENABLE_APPLE_TRANSLATION
+@MainActor
+enum PreparedTranslationSessionTranslator {
+    static func translation(
+        using session: TranslationSession,
+        for document: LyricsDocument,
+        targetLanguageIdentifier: String
+    ) async throws -> LyricTranslation? {
+        let requests = document.lines.compactMap { line -> (lineID: LyricLine.ID, text: String)? in
+            let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return nil }
+            return (line.id, text)
+        }
+        guard !requests.isEmpty else { return nil }
+
+        var translatedLines: [(lineID: LyricLine.ID, sourceLanguageIdentifier: String, text: String)] = []
+        for request in requests {
+            let response = try await session.translate(request.text)
+            let text = response.targetText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty,
+               !normalizedText(text).elementsEqual(normalizedText(request.text)) {
+                translatedLines.append((
+                    lineID: request.lineID,
+                    sourceLanguageIdentifier: response.sourceLanguage.minimalIdentifier,
+                    text: text
+                ))
+            }
+        }
+
+        translatedLines = translatedLines.sorted { $0.lineID < $1.lineID }
+        guard !translatedLines.isEmpty else { return nil }
+
+        return LyricTranslation(
+            targetLanguageIdentifier: LyricsDocument.normalizedLanguageIdentifier(targetLanguageIdentifier)
+                ?? targetLanguageIdentifier,
+            sourceLanguageIdentifier: translatedLines.first?.sourceLanguageIdentifier
+                ?? document.sourceLanguageIdentifier,
+            lines: translatedLines.enumerated().map { offset, line in
+                TranslatedLyricLine(id: offset, sourceLineID: line.lineID, text: line.text)
+            }
+        )
+    }
+
+    private static func normalizedText(_ text: String) -> String {
+        text
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .current)
+            .components(separatedBy: .whitespacesAndNewlines)
+            .joined()
+            .trimmingCharacters(in: .punctuationCharacters)
+    }
+}
+#endif
+
 @MainActor
 struct ExperimentalTranslationProviderPlaceholder: TranslationProvider {
     let displayName = "Experimental translation provider placeholder"
