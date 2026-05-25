@@ -154,7 +154,9 @@ nonisolated private final class AppleScriptExecutor: @unchecked Sendable {
             }
             let job = jobs.removeFirst()
             condition.unlock()
-            job()
+            autoreleasepool {
+                job()
+            }
         }
     }
 }

@@ -398,6 +398,8 @@ actor DiskBackedMediaCache: UserControllableMediaCache {
         let record = DiskPayloadRecord(payload: payload)
         guard let data = try? JSONEncoder().encode(record),
               data.count <= diskPolicy.maxObjectCost else {
+            removeDiskEntry(lookupKey: lookupKey(for: key))
+            persistIndex()
             return
         }
 

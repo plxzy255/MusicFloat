@@ -164,6 +164,29 @@ final class MediaCacheTests: XCTestCase {
         XCTAssertFalse(filenames.contains(rawKey))
     }
 
+    func testDiskBackedCacheRemovesOldPayloadWhenReplacementEncodesTooLarge() async throws {
+        let rootURL = try makeTemporaryCacheDirectory()
+        let key = MediaCacheKey(namespace: .translation, rawValue: "replace-large")
+        let diskPolicy = DiskMediaCachePolicy(maxEntries: 8, maxTotalCost: 1024, maxObjectCost: 64)
+        let writer = DiskBackedMediaCache(
+            diskPolicy: diskPolicy,
+            diskPersistenceEnabled: true,
+            rootURL: rootURL
+        )
+
+        await writer.store(.text("old"), for: key)
+        await writer.store(.text(String(repeating: "x", count: 60)), for: key)
+
+        let reader = DiskBackedMediaCache(
+            diskPolicy: diskPolicy,
+            diskPersistenceEnabled: true,
+            rootURL: rootURL
+        )
+        let restored = await reader.value(for: key)
+
+        XCTAssertNil(restored)
+    }
+
     private func makeTemporaryCacheDirectory() throws -> URL {
         let rootURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("MusicFloatMediaCacheTests-\(UUID().uuidString)", isDirectory: true)
