@@ -51,11 +51,12 @@ final class PublicLyricsProvider: LyricsProvider {
         var hasAccessibilityPermission: @MainActor () -> Bool
         var shouldRetryVisibleLyrics: @MainActor () -> Bool
         var isMediaUserTokenConfigured: @MainActor () -> Bool
-        var fetchAppleMusicWebLyrics: @MainActor (NowPlayingTrack) async throws -> LyricsDocument?
+        var fetchAppleMusicWebLyrics: @MainActor (NowPlayingTrack, String) async throws -> LyricsDocument?
         var isLRCLIBFallbackEnabled: @MainActor () -> Bool
-        var fetchLRCLIBLyrics: @MainActor (NowPlayingTrack) async throws -> LyricsDocument?
+        var fetchLRCLIBLyrics: @MainActor (NowPlayingTrack, String) async throws -> LyricsDocument?
         var fetchAXLyrics: @MainActor () -> LyricsDocument?
         var sleep: @MainActor (UInt64) async throws -> Void
+        var now: @MainActor () -> Date
 
         static func live(appleMusicWeb: AppleMusicWebLyricsProvider) -> Self {
             Self(
@@ -74,18 +75,19 @@ final class PublicLyricsProvider: LyricsProvider {
                 isMediaUserTokenConfigured: {
                     MediaUserTokenStore.isConfigured
                 },
-                fetchAppleMusicWebLyrics: { track in
-                    try await appleMusicWeb.lyrics(for: track)
+                fetchAppleMusicWebLyrics: { track, lookupID in
+                    try await appleMusicWeb.lyrics(for: track, lookupID: lookupID)
                 },
                 isLRCLIBFallbackEnabled: {
                     UserDefaults.standard.object(forKey: "lrclibFallbackEnabled") as? Bool ?? true
                 },
-                fetchLRCLIBLyrics: { track in
+                fetchLRCLIBLyrics: { track, lookupID in
                     try await LRCLIBLyricsProvider.fetch(
                         title: track.title,
                         artist: track.artist,
                         album: track.album,
-                        duration: track.duration
+                        duration: track.duration,
+                        lookupID: lookupID
                     )
                 },
                 fetchAXLyrics: {
@@ -93,14 +95,53 @@ final class PublicLyricsProvider: LyricsProvider {
                 },
                 sleep: { nanoseconds in
                     try await Task.sleep(nanoseconds: nanoseconds)
+                },
+                now: {
+                    Date()
                 }
             )
         }
     }
 
-    private var memoryCache: [String: LyricsDocument] = [:]
-    private let maxCacheEntries = 64
+    private enum CacheEntry {
+        case document(LyricsDocument, expiresAt: Date)
+        case unavailable(expiresAt: Date)
+    }
+
+    private enum CachePolicy {
+        case documentIfCacheable
+        case unavailable
+        case none
+    }
+
+    private struct LookupOutcome {
+        let result: LyricsProviderResult
+        let cachePolicy: CachePolicy
+
+        static func available(_ document: LyricsDocument) -> Self {
+            Self(result: .available(document), cachePolicy: .documentIfCacheable)
+        }
+
+        static func unavailable(cachePolicy: CachePolicy = .none) -> Self {
+            Self(result: .unavailable, cachePolicy: cachePolicy)
+        }
+
+        static func failed(_ message: String) -> Self {
+            Self(result: .failed(message), cachePolicy: .none)
+        }
+    }
+
+    private var memoryCache: [String: CacheEntry] = [:]
+    private struct InFlightLookup {
+        let lookupID: String
+        let task: Task<LookupOutcome, Never>
+    }
+
+    private var inFlightTasks: [String: InFlightLookup] = [:]
     private var cacheOrder: [String] = []
+    private let maxCacheEntries = 64
+    private static let documentCacheTTL: TimeInterval = 6 * 60 * 60
+    private static let unavailableCacheTTL: TimeInterval = 10 * 60
     private let appleMusicWeb = AppleMusicWebLyricsProvider()
     private let dependencies: Dependencies
 
@@ -124,50 +165,77 @@ final class PublicLyricsProvider: LyricsProvider {
         if track.providerName.lowercased().contains("mock") {
             return .unavailable
         }
-        if let cached = memoryCache[track.id] {
-            return .available(cached)
+        if let cached = cachedResult(for: track.id, now: dependencies.now()) {
+            return cached
+        }
+        if let inFlight = inFlightTasks[track.id] {
+            AppTelemetry.performance.info(
+                "Lyrics lookup joined in-flight task lookup=\(inFlight.lookupID, privacy: .public)"
+            )
+            let outcome = await inFlight.task.value
+            if !Task.isCancelled {
+                cache(outcome, for: track.id, now: dependencies.now())
+            }
+            return outcome.result
         }
 
+        let lookupID = Self.makeLookupID()
+        let task = Task { @MainActor [self, track, lookupID] in
+            await fetchLyricsUncached(for: track, lookupID: lookupID)
+        }
+        inFlightTasks[track.id] = InFlightLookup(lookupID: lookupID, task: task)
+        let outcome = await task.value
+        inFlightTasks.removeValue(forKey: track.id)
+        if !Task.isCancelled {
+            cache(outcome, for: track.id, now: dependencies.now())
+        }
+        return outcome.result
+    }
+
+    private func fetchLyricsUncached(for track: NowPlayingTrack, lookupID: String) async -> LookupOutcome {
+        AppTelemetry.performance.info(
+            "Lyrics lookup started lookup=\(lookupID, privacy: .public)"
+        )
         // 1) AppleScript library lyrics. These are canonical for local/library
         // tracks and always plain text. Keep this lookup library-only; the AX
         // panel scrape is intentionally the final fallback because traversing
         // Music.app's accessibility tree can briefly stall the UI.
+        var sawTransientProviderFailure = false
+        var completedAXFallback = false
         let appleScriptStartedAt = Date()
         let appleScriptDoc = await dependencies.fetchAppleScriptLyrics()
         AppTelemetry.performance.notice(
-            "Lyrics stage AppleScript finished elapsed=\(Date().timeIntervalSince(appleScriptStartedAt), privacy: .public)"
+            "Lyrics stage AppleScript finished lookup=\(lookupID, privacy: .public) elapsed=\(Date().timeIntervalSince(appleScriptStartedAt), privacy: .public)"
         )
         if let doc = appleScriptDoc, doc.source == .musicApp {
-            if shouldCache(document: doc) {
-                store(doc, for: track.id)
-            }
-            AppTelemetry.performance.info("Lyrics hit \(doc.source.rawValue, privacy: .public) timed=\(doc.isTimed) lines=\(doc.lines.count)")
+            AppTelemetry.performance.info("Lyrics hit lookup=\(lookupID, privacy: .public) source=\(doc.source.rawValue, privacy: .public) timed=\(doc.isTimed) lines=\(doc.lines.count)")
             return .available(doc)
         }
         let axPermissionWasNeeded = dependencies.requiresAccessibilityPermission()
+        let webConfigured = dependencies.isMediaUserTokenConfigured()
 
         // 2) Apple Music web API — millisecond-accurate TTML straight from
         // Apple. Only runs when the user has pasted their media-user-token
         // in Settings.
-        if dependencies.isMediaUserTokenConfigured() {
+        if webConfigured {
             do {
                 let webStartedAt = Date()
-                if let doc = try await dependencies.fetchAppleMusicWebLyrics(track) {
+                if let doc = try await dependencies.fetchAppleMusicWebLyrics(track, lookupID) {
                     AppTelemetry.performance.notice(
-                        "Lyrics stage AppleMusicWeb finished elapsed=\(Date().timeIntervalSince(webStartedAt), privacy: .public) result=hit"
+                        "Lyrics stage AppleMusicWeb finished lookup=\(lookupID, privacy: .public) elapsed=\(Date().timeIntervalSince(webStartedAt), privacy: .public) result=hit"
                     )
-                    store(doc, for: track.id)
-                    AppTelemetry.performance.info("Lyrics hit appleMusicWeb timed=\(doc.isTimed) lines=\(doc.lines.count)")
+                    AppTelemetry.performance.info("Lyrics hit lookup=\(lookupID, privacy: .public) source=appleMusicWeb timed=\(doc.isTimed) lines=\(doc.lines.count)")
                     return .available(doc)
                 }
                 AppTelemetry.performance.notice(
-                    "Lyrics stage AppleMusicWeb finished elapsed=\(Date().timeIntervalSince(webStartedAt), privacy: .public) result=miss"
+                    "Lyrics stage AppleMusicWeb finished lookup=\(lookupID, privacy: .public) elapsed=\(Date().timeIntervalSince(webStartedAt), privacy: .public) result=miss"
                 )
-                AppTelemetry.performance.info("AM web returned no lyrics")
+                AppTelemetry.performance.info("AM web returned no lyrics lookup=\(lookupID, privacy: .public)")
             } catch is CancellationError {
-                return .unavailable
+                return .unavailable()
             } catch {
-                AppTelemetry.performance.error("AM web error: \(error.localizedDescription, privacy: .public)")
+                sawTransientProviderFailure = true
+                AppTelemetry.performance.error("AM web error lookup=\(lookupID, privacy: .public) reason=\(error.localizedDescription, privacy: .public)")
             }
         }
 
@@ -175,7 +243,7 @@ final class PublicLyricsProvider: LyricsProvider {
         // so the user sees the authoritative Apple result instead of a
         // potentially mismatched LRCLIB upload.
         guard lrclibFallbackEnabled else {
-            return .unavailable
+            return .unavailable()
         }
 
         // 3) LRCLIB — prefer synced lyrics over the AX single-line scrape so
@@ -183,73 +251,114 @@ final class PublicLyricsProvider: LyricsProvider {
         // happens later in the refresh tick.
         do {
             let lrclibStartedAt = Date()
-            if let doc = try await dependencies.fetchLRCLIBLyrics(track) {
+            if let doc = try await dependencies.fetchLRCLIBLyrics(track, lookupID) {
                 AppTelemetry.performance.notice(
-                    "Lyrics stage LRCLIB finished elapsed=\(Date().timeIntervalSince(lrclibStartedAt), privacy: .public) result=hit"
+                    "Lyrics stage LRCLIB finished lookup=\(lookupID, privacy: .public) elapsed=\(Date().timeIntervalSince(lrclibStartedAt), privacy: .public) result=hit"
                 )
                 if doc.isTimed {
-                    store(doc, for: track.id)
-                    AppTelemetry.performance.info("Lyrics hit lrclib timed=true lines=\(doc.lines.count)")
+                    AppTelemetry.performance.info("Lyrics hit lookup=\(lookupID, privacy: .public) source=lrclib timed=true lines=\(doc.lines.count)")
                     return .available(doc)
                 }
                 // Untimed LRCLIB — keep as fallback, but try AX first so we
                 // at least get the live highlighted line if the panel is open.
                 if dependencies.hasAccessibilityPermission(),
                    let axDoc = dependencies.fetchAXLyrics() {
-                    AppTelemetry.performance.info("Lyrics hit musicAppUI (LRCLIB plain ignored) lines=\(axDoc.lines.count)")
+                    AppTelemetry.performance.info("Lyrics hit lookup=\(lookupID, privacy: .public) source=musicAppUI reason=lrclib_plain_ignored lines=\(axDoc.lines.count)")
                     return .available(axDoc)
                 }
-                AppTelemetry.performance.info("Lyrics hit lrclib timed=false lines=\(doc.lines.count)")
-                store(doc, for: track.id)
+                AppTelemetry.performance.info("Lyrics hit lookup=\(lookupID, privacy: .public) source=lrclib timed=false lines=\(doc.lines.count)")
                 return .available(doc)
             }
             AppTelemetry.performance.notice(
-                "Lyrics stage LRCLIB finished elapsed=\(Date().timeIntervalSince(lrclibStartedAt), privacy: .public) result=miss"
+                "Lyrics stage LRCLIB finished lookup=\(lookupID, privacy: .public) elapsed=\(Date().timeIntervalSince(lrclibStartedAt), privacy: .public) result=miss"
             )
         } catch is CancellationError {
-            return .unavailable
+            return .unavailable()
         } catch {
-            AppTelemetry.performance.error("LRCLIB error: \(error.localizedDescription, privacy: .public)")
+            sawTransientProviderFailure = true
+            AppTelemetry.performance.error("LRCLIB error lookup=\(lookupID, privacy: .public) reason=\(error.localizedDescription, privacy: .public)")
         }
 
         // 4) AX panel — final catalog fallback when LRCLIB has nothing.
         if dependencies.hasAccessibilityPermission() {
+            completedAXFallback = true
             if let axDoc = dependencies.fetchAXLyrics() {
-                AppTelemetry.performance.info("Lyrics hit \(axDoc.source.rawValue, privacy: .public) timed=\(axDoc.isTimed) lines=\(axDoc.lines.count)")
+                AppTelemetry.performance.info("Lyrics hit lookup=\(lookupID, privacy: .public) source=\(axDoc.source.rawValue, privacy: .public) timed=\(axDoc.isTimed) lines=\(axDoc.lines.count)")
                 return .available(axDoc)
             }
             if dependencies.shouldRetryVisibleLyrics() {
                 for _ in 1...6 {
                     try? await dependencies.sleep(500_000_000)
                     guard !Task.isCancelled else {
-                        return .unavailable
+                        return .unavailable()
                     }
                     if let doc = dependencies.fetchAXLyrics() {
-                        AppTelemetry.performance.info("Lyrics hit \(doc.source.rawValue, privacy: .public) timed=\(doc.isTimed) lines=\(doc.lines.count)")
+                        AppTelemetry.performance.info("Lyrics hit lookup=\(lookupID, privacy: .public) source=\(doc.source.rawValue, privacy: .public) timed=\(doc.isTimed) lines=\(doc.lines.count)")
                         return .available(doc)
                     }
                 }
-                AppTelemetry.performance.info("Music.app UI lyrics still loading; no LRCLIB match")
+                AppTelemetry.performance.info("Music.app UI lyrics still loading lookup=\(lookupID, privacy: .public) reason=no_lrclib_match")
             }
         } else if axPermissionWasNeeded || appleScriptDoc?.source == .musicAppUI {
             return .failed(Self.accessibilityPermissionMessage)
         }
 
-        return .unavailable
+        let canNegativeCacheMiss = webConfigured && completedAXFallback && !sawTransientProviderFailure
+        return .unavailable(cachePolicy: canNegativeCacheMiss ? .unavailable : .none)
     }
 
     private static let accessibilityPermissionMessage =
         "Allow MusicFloat in Privacy & Security > Accessibility to use Music lyrics."
 
-    private func store(_ document: LyricsDocument, for key: String) {
+    private static func makeLookupID() -> String {
+        String(UUID().uuidString.prefix(8))
+    }
+
+    private func cachedResult(for key: String, now: Date) -> LyricsProviderResult? {
+        guard let entry = memoryCache[key] else {
+            return nil
+        }
+        switch entry {
+        case let .document(document, expiresAt):
+            guard expiresAt > now else {
+                removeCachedEntry(for: key)
+                return nil
+            }
+            return .available(document)
+        case let .unavailable(expiresAt):
+            guard expiresAt > now else {
+                removeCachedEntry(for: key)
+                return nil
+            }
+            return .unavailable
+        }
+    }
+
+    private func cache(_ outcome: LookupOutcome, for key: String, now: Date) {
+        switch (outcome.result, outcome.cachePolicy) {
+        case let (.available(document), .documentIfCacheable) where shouldCache(document: document):
+            store(.document(document, expiresAt: now.addingTimeInterval(Self.documentCacheTTL)), for: key)
+        case (.unavailable, .unavailable):
+            store(.unavailable(expiresAt: now.addingTimeInterval(Self.unavailableCacheTTL)), for: key)
+        case (.available, _), (.unavailable, _), (.failed, _):
+            break
+        }
+    }
+
+    private func store(_ entry: CacheEntry, for key: String) {
         if memoryCache[key] == nil {
             cacheOrder.append(key)
         }
-        memoryCache[key] = document
+        memoryCache[key] = entry
         if cacheOrder.count > maxCacheEntries {
             let evict = cacheOrder.removeFirst()
             memoryCache.removeValue(forKey: evict)
         }
+    }
+
+    private func removeCachedEntry(for key: String) {
+        memoryCache.removeValue(forKey: key)
+        cacheOrder.removeAll { $0 == key }
     }
 
     private func shouldCache(document: LyricsDocument) -> Bool {

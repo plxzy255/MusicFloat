@@ -14,9 +14,145 @@ the status as fixes land or evidence changes.
 - Area: Apple Music web lyrics / network provider runtime
 - Impact: unknown; this may be a transient network-layer timeout unless it
   correlates with failed lyric fetches or user-visible unavailable states.
-- Next check: capture surrounding `cv.MusicFloat` provider logs and the active
-  endpoint/result when this appears.
+- Current mitigation: each uncached public lyrics lookup now gets a short
+  privacy-safe `lookup=` token shared across top-level provider stages, Apple
+  Music web catalog/endpoint logs, and LRCLIB endpoint logs. Request failures
+  also log endpoint family plus safe error class, and transient catalog lookup
+  failures are no longer cached as unavailable lyrics. Live run-ledger summaries
+  now also extract privacy-safe lookup counts, timeout counts, and sampled
+  timeout lookup IDs from live logs, plus source-split seek counts,
+  resync/track-change counts, nearby timeout lookup samples, uncorrelated
+  timeout counts, and privacy-safe track token samples. The profiling log capture now includes both
+  `subsystem == "cv.MusicFloat"` and `process == "MusicFloat"` so process-level
+  `nw_read_request_report` lines can be preserved in local artifacts if they
+  recur. Seek, Music.app refinement, provider, translation, and artwork logs
+  use per-process track telemetry tokens rather than raw track IDs, preserving
+  local correlation without exposing fallback title/album/artist strings. Driven live run
+  `20260525-080546Z-live-Direct-Sample-28b81d4` exercised two provider lookups,
+  including a track change, and recorded `network_timeout_count=0`.
+- 2026-05-25 follow-up: clean snapshot run
+  `20260525-142048Z-live-Direct-Sample-52adb7a` also recorded
+  `network_timeout_count=0` after `script/profile.sh` was tightened to ignore
+  AppleEvent timeout parameters such as `timeout 7200`. Keep the issue open
+  for actual `nw_read_request_report ... Operation timed out` evidence, not
+  generic AppleEvent timeout fields.
+- Next check: capture surrounding `cv.MusicFloat` provider logs for a matching
+  `lookup=` value when this appears in a real live lookup. Keep this open until
+  a live run proves whether the timeout is harmless cancellation, transient
+  network failure, or a user-visible provider miss.
 
 ## Resolved
 
-- None yet.
+### 2026-05-25 opt-in disk cache and clear-cache UX batch
+
+- Status: resolved
+- Areas: cache persistence, native Settings, privacy-safe disk keys.
+- Source reports:
+  - `reports/research-2026-05-25-resource-usage.md`
+  - `reports/research-2026-05-25-bug-risk-register.md`
+  - `reports/research-2026-05-25-reference-comparison.md`
+- Changes:
+  - `DiskBackedMediaCache` wraps the bounded memory cache and persists only
+    selected namespaces when `diskMediaCacheEnabled` is true.
+  - The default disk-persisted namespaces are artwork and translation; raw
+    lyrics remain memory-only until a separate privacy/product decision.
+  - Disk filenames and the cache index use stable hashed lookup keys rather
+    than raw track, title, lyric, or provider lookup strings.
+  - Settings now includes a Disk cache toggle, usage summary, and Clear Cache
+    action that removes both memory entries and disk files.
+- Verification:
+  - Focused `MediaCacheTests` passed, including opt-in persistence across cache
+    instances, disabled disk-read behavior, clear-cache removal, and raw-key
+    privacy for the disk index/filenames.
+
+### 2026-05-25 translation cache and profiling-lane batch
+
+- Status: resolved
+- Areas: translation/artwork cache, profiling evidence hygiene, live ledger
+  summaries.
+- Source reports:
+  - `reports/research-2026-05-25-resource-usage.md`
+  - `reports/translation-architecture-plan.md`
+  - `reports/performance-flaws.md`
+- Changes:
+  - Successful translations now cache through `EphemeralMediaCache` as bounded
+    JSON data keyed by provider/document/target fields.
+  - Translation cache keys use a one-process hash and do not expose raw lyric
+    text in key strings or logs.
+  - Live artwork refresh now caches downsampled artwork bytes through the same
+    bounded cache using privacy-safe hashed track keys.
+  - `script/profile.sh --apple-translation` creates an explicit
+    Translation/NaturalLanguage profiling lane.
+  - Run-ledger entries now record `app.apple_translation_build`, and strict
+    comparisons reject mixed default-vs-translation builds.
+  - Live verification summaries now include lookup/timeout correlation fields
+    so agents can triage provider timeouts without opening raw live logs first.
+- Verification:
+  - Focused `ProviderPipelineControllerTests` passed, including translation
+    cache-hit behavior and privacy-safe cache-key coverage.
+  - Focused `AppStateArtworkTests` passed, including artwork cache-hit behavior
+    and privacy-safe artwork cache-key coverage.
+  - `bash -n script/profile.sh` passed.
+  - A local-only isolated smoke sample with `--apple-translation` passed and
+    recorded `app.apple_translation_build=true`.
+
+### 2026-05-25 provider-cache, parsing, and agent-gate batch
+
+- Status: resolved
+- Areas: provider cache safety, catalog miss backoff, parser actor isolation,
+  warning stability, agent verification.
+- Source reports:
+  - `reports/research-2026-05-25-resource-usage.md`
+  - `reports/research-2026-05-25-bug-risk-register.md`
+  - `reports/research-2026-05-25-codex-agent-experience.md`
+  - `reports/research-2026-05-25-skills-and-fixtures-strategy.md`
+- Changes:
+  - Public lyrics lookup now coalesces in-flight requests by track key, keeps a
+    bounded positive cache, and uses a short negative cache only for confirmed
+    fully exhausted misses.
+  - Cancellation, transient catalog/web failures, disabled fallback paths, and
+    missing media-token paths no longer poison the unavailable cache.
+  - Transient catalog resolution failures now throw through the Apple Music web
+    provider so the top-level lyrics provider can avoid confirmed-miss caching
+    even when later fallbacks also miss.
+  - Apple Music catalog misses have a bounded short-term backoff, while
+    transient resolver failures retry on the next lookup.
+  - Apple Music web JSON decode, catalog search decode, TTML parse, LRCLIB
+    decode, and LRCLIB parse now run through nonisolated/detached helpers
+    instead of broad MainActor work.
+  - Strict memory-safety warnings in the AX observer and Apple Music event
+    listener were removed from the current build gate.
+  - `script/agent_verify.sh` now gives agents one repeatable full check: full
+    tests, warning scrape, app verify, profile report, and profile disk summary.
+- Verification:
+  - Focused public lyrics provider tests passed.
+  - Focused Apple Music web provider tests passed.
+  - A default Release build passed and does not link Translation or
+    NaturalLanguage frameworks.
+  - `script/agent_verify.sh` passed after the script's macOS `mktemp` template
+    bug was fixed.
+
+### 2026-05-25 report-improvement batch
+
+- Status: resolved
+- Areas: startup idleness, native panel sizing, menu polish, settings lifecycle,
+  hidden live memory, privacy-safe telemetry.
+- Source reports:
+  - `reports/research-2026-05-25-bug-risk-register.md`
+  - `reports/research-2026-05-25-native-smoothness.md`
+  - `reports/research-2026-05-25-resource-usage.md`
+- Changes:
+  - Normal launch now stays menu-bar idle; `--demo` and `--live` remain explicit
+    auto-start paths.
+  - Visible overlay width changes now resize and clamp the existing `NSPanel`.
+  - Long current-track menu labels are truncated while preserving a tooltip.
+  - Settings language loading now uses SwiftUI `.task` instead of an unstructured
+    `Task` from `onAppear`.
+  - Stopping live Apple Music releases the live provider pipeline when reduced
+    hidden memory mode is enabled.
+  - PlayerInfo/LRCLIB/catalog/calibration telemetry no longer logs raw
+    title/artist/album or lyric-line text in the targeted report findings.
+  - Seek/provider/translation/artwork correlation logs now use privacy-safe
+    track telemetry tokens rather than raw `trackID=` values.
+  - `script/profile.sh compare-runs --strict` now rejects invalid comparison
+    evidence for agent/CI-style checks.

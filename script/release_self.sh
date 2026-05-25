@@ -23,6 +23,10 @@ that launch mode to the app; --memory-duration controls sample length.
 --drive-music with --live seeks and attempts a next-track action during the
 sample, which changes active Music.app playback.
 --status prints the project, installed app, and running process identity.
+
+Set ENABLE_APPLE_TRANSLATION_BUILD=1 to build an explicit Release bundle with
+Apple Translation/NaturalLanguage linked. Default Release keeps that framework
+cost out of the baseline.
 EOF
 }
 
@@ -244,6 +248,11 @@ status
 
 stop_app
 
+extra_build_settings=()
+if [[ "${ENABLE_APPLE_TRANSLATION_BUILD:-0}" == "1" || "${ENABLE_APPLE_TRANSLATION_BUILD:-}" == "true" ]]; then
+  extra_build_settings+=(SWIFT_ACTIVE_COMPILATION_CONDITIONS=ENABLE_APPLE_TRANSLATION)
+fi
+
 /usr/bin/xcodebuild \
   -project "$PROJECT" \
   -scheme "$SCHEME" \
@@ -256,6 +265,7 @@ stop_app
   CLANG_COVERAGE_MAPPING=NO \
   GCC_INSTRUMENT_PROGRAM_FLOW_ARCS=NO \
   GCC_GENERATE_TEST_COVERAGE_FILES=NO \
+  "${extra_build_settings[@]}" \
   build
 
 /bin/mkdir -p "$DIST_DIR"

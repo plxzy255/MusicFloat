@@ -17,7 +17,7 @@ enum AppleMusicEventListener {
 
     struct PlayerInfoEvent: Sendable {
         let state: PlayerState
-        let rawSummary: String
+        let sanitizedSummary: String
     }
 
     /// An async stream of player states derived from `playerInfo` notifications.
@@ -95,22 +95,23 @@ enum AppleMusicEventListener {
         }()
         let duration = totalTimeMs / 1000.0
 
-        let persistentID: String = {
+        let notificationPersistentID: String? = {
             if let v = info["PersistentID"] as? NSNumber {
                 return canonicalPersistentID(v.uint64Value)
             }
             if let v = info["Persistent ID"] as? String {
                 return canonicalPersistentID(v) ?? v
             }
-            return "\(artist)|\(album)|\(title)"
+            return nil
         }()
-        let rawSummary = [
+        let persistentID = notificationPersistentID ?? "\(artist)|\(album)|\(title)"
+        let sanitizedSummary = [
             "state=\(rawState)",
-            "name=\(title)",
-            "artist=\(artist)",
-            "album=\(album)",
-            "durationMs=\(totalTimeMs)",
-            "persistentID=\(persistentID)"
+            "hasName=\(!title.isEmpty)",
+            "hasArtist=\(!artist.isEmpty)",
+            "hasAlbum=\(!album.isEmpty)",
+            "durationMs=\(Int(totalTimeMs.rounded()))",
+            "persistentIDSource=\(notificationPersistentID == nil ? "fallback" : "notification")"
         ].joined(separator: " ")
 
         let track = title.isEmpty ? nil : NowPlayingTrack(
@@ -130,11 +131,12 @@ enum AppleMusicEventListener {
             elapsedTime: 0,
             updatedAt: Date()
         )
-        return PlayerInfoEvent(state: state, rawSummary: rawSummary)
+        return PlayerInfoEvent(state: state, sanitizedSummary: sanitizedSummary)
     }
 
     nonisolated static func canonicalPersistentID(_ value: UInt64) -> String {
-        String(format: "%016llX", value)
+        let hex = String(value, radix: 16, uppercase: true)
+        return String(repeating: "0", count: max(0, 16 - hex.count)) + hex
     }
 
     nonisolated static func canonicalPersistentID(_ raw: String) -> String? {

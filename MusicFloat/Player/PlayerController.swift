@@ -20,6 +20,14 @@ final class PlayerController {
     private static let liveLineTickCap: TimeInterval = 1.0
     private static let liveSyllableTickCap: TimeInterval = 0.12
     private static let liveTickMinimum: TimeInterval = 0.03
+    private static let resyncFailureBackoffCap: TimeInterval = 10.0
+
+    struct LiveResyncDecision: Equatable, Sendable {
+        let snapshotDelta: TimeInterval
+        let isSameTrack: Bool
+        let shouldSnap: Bool
+        let isSeek: Bool
+    }
 
     private let bridge: any MusicAppBridge
     private let liveBridgeFactory: @MainActor () -> any MusicAppBridge
@@ -27,7 +35,6 @@ final class PlayerController {
     private var liveTask: Task<Void, Never>?
     private var liveTickTask: Task<Void, Never>?
     private var liveBridge: (any MusicAppBridge)?
-    private var liveTickCallback: (@MainActor () -> Void)?
     private var liveTrackChangedCallback: (@MainActor (NowPlayingTrack?) -> Void)?
     private let syncEngine = LyricsSyncEngine()
 
@@ -49,15 +56,13 @@ final class PlayerController {
     ///   to trigger lyrics fetches.
     func startLiveAppleMusic(
         appState: AppState,
-        onTrackChanged: (@MainActor (NowPlayingTrack?) -> Void)? = nil,
-        onLiveTick: (@MainActor () -> Void)? = nil
+        onTrackChanged: (@MainActor (NowPlayingTrack?) -> Void)? = nil
     ) {
         guard liveTask == nil else { return }
         stopMockPreview(appState: appState)
 
         let bridge = liveBridgeFactory()
         liveBridge = bridge
-        liveTickCallback = onLiveTick
         liveTrackChangedCallback = onTrackChanged
         appState.setLiveModeRunning(true)
         AppTelemetry.performance.info("Live Apple Music bridge started")
@@ -72,7 +77,7 @@ final class PlayerController {
             )
             appState.updatePlayerState(initial)
             var lastTrackID = initial.track?.id
-            self.restartLiveTick(appState: appState, onLiveTick: onLiveTick)
+            self.restartLiveTick(appState: appState)
             onTrackChanged?(initial.track)
 
             for await state in bridge.events() {
@@ -84,25 +89,25 @@ final class PlayerController {
                 let eventDelta = state.elapsedTime - previousEffectiveElapsed
                 if AppTelemetry.isVerbosePlaybackTelemetryEnabled {
                     AppTelemetry.performance.debug(
-                        "Live event: status=\(state.playbackStatus.rawValue, privacy: .public) trackID=\(incomingTrackID ?? "nil", privacy: .public) elapsed=\(state.elapsedTime) previousElapsed=\(previousEffectiveElapsed) delta=\(eventDelta)"
+                        "Live event: status=\(state.playbackStatus.rawValue, privacy: .public) track=\(NowPlayingTrack.telemetryID(for: incomingTrackID), privacy: .public) elapsed=\(state.elapsedTime) previousElapsed=\(previousEffectiveElapsed) delta=\(eventDelta)"
                     )
                 }
                 if isSameTrack, abs(eventDelta) > Self.seekDetectionThreshold {
                     AppTelemetry.performance.info(
-                        "SEEK_DETECTED source=playerInfoEvent trackID=\(incomingTrackID ?? "nil", privacy: .public) previousElapsed=\(previousEffectiveElapsed) incomingElapsed=\(state.elapsedTime) delta=\(eventDelta)"
+                        "SEEK_DETECTED source=playerInfoEvent track=\(NowPlayingTrack.telemetryID(for: incomingTrackID), privacy: .public) previousElapsed=\(previousEffectiveElapsed) incomingElapsed=\(state.elapsedTime) delta=\(eventDelta)"
                     )
                 }
                 appState.updatePlayerState(state)
                 if state.track?.id != lastTrackID {
                     AppTelemetry.performance.info(
-                        "Live track changed previousTrackID=\(lastTrackID ?? "nil", privacy: .public) nextTrackID=\(state.track?.id ?? "nil", privacy: .public)"
+                        "Live track changed previous=\(NowPlayingTrack.telemetryID(for: lastTrackID), privacy: .public) next=\(state.track?.telemetryID ?? "none", privacy: .public)"
                     )
                     lastTrackID = state.track?.id
                     onTrackChanged?(state.track)
                 }
                 // Re-sync tick to the fresh elapsedTime from the event so
                 // play/pause/skip/seek doesn't leave the active line behind.
-                self.restartLiveTick(appState: appState, onLiveTick: onLiveTick)
+                self.restartLiveTick(appState: appState)
             }
             _ = self
         }
@@ -119,7 +124,6 @@ final class PlayerController {
         liveTickTask?.cancel()
         liveTickTask = nil
         liveBridge = nil
-        liveTickCallback = nil
         liveTrackChangedCallback = nil
         appState?.setMusicVolume(nil)
         appState?.setPlaybackCommandInFlight(false)
@@ -188,7 +192,7 @@ final class PlayerController {
         if refreshedState.track?.id != previousTrackID {
             liveTrackChangedCallback?(refreshedState.track)
         }
-        restartLiveTick(appState: appState, onLiveTick: liveTickCallback)
+        restartLiveTick(appState: appState)
         return refreshedState
     }
 
@@ -258,7 +262,7 @@ final class PlayerController {
     func overlayVisibilityChanged(_ isVisible: Bool, appState: AppState) {
         guard liveTask != nil else { return }
         if isVisible {
-            restartLiveTick(appState: appState, onLiveTick: liveTickCallback)
+            restartLiveTick(appState: appState)
         } else {
             liveTickTask?.cancel()
             liveTickTask = nil
@@ -268,10 +272,7 @@ final class PlayerController {
     /// Advances live elapsed time by wall-clock delta while live mode is
     /// playing and the overlay is visible. Periodically re-pulls `player
     /// position` from Music.app to correct drift.
-    private func restartLiveTick(
-        appState: AppState,
-        onLiveTick: (@MainActor () -> Void)? = nil
-    ) {
+    private func restartLiveTick(appState: AppState) {
         liveTickTask?.cancel()
         liveTickTask = nil
 
@@ -303,7 +304,8 @@ final class PlayerController {
                 )
                 let nextLine = self.syncEngine.nextLineStart(
                     in: document,
-                    after: elapsed + appState.effectiveLyricOffsetSeconds
+                    after: elapsed + appState.effectiveLyricOffsetSeconds,
+                    duration: appState.playerState.track?.duration
                 )
                 let nextBoundary = [nextSyllable, nextLine].compactMap { $0 }.min()
                 let targetElapsed = (nextBoundary.map { $0 - appState.effectiveLyricOffsetSeconds }) ?? (elapsed + Self.liveLineTickCap)
@@ -327,9 +329,7 @@ final class PlayerController {
                 // Periodic watchdog against Music.app's authoritative position.
                 // While the overlay is visible this is frequent enough to catch
                 // seeks even if Music.app does not post a playerInfo event.
-                let resyncDue: TimeInterval = consecutiveResyncFailures > 0
-                    ? min(Self.resyncInterval, 1.0 + Double(consecutiveResyncFailures) * 2.0)
-                    : Self.resyncInterval
+                let resyncDue = Self.liveResyncInterval(consecutiveFailures: consecutiveResyncFailures)
                 if now.timeIntervalSince(lastResync) >= resyncDue,
                    let bridge = self.liveBridge {
                     lastResync = now
@@ -337,25 +337,25 @@ final class PlayerController {
                     if Task.isCancelled { return }
                     if snapshot.track != nil {
                         consecutiveResyncFailures = 0
-                        let snapshotDelta = snapshot.elapsedTime - elapsed
-                        let isSameTrack = snapshot.track?.id == appState.playerState.track?.id
-                        let shouldSnap = snapshot.playbackStatus == .playing
-                            && isSameTrack
-                            && abs(snapshotDelta) >= Self.resyncSnapThreshold
-                        if shouldSnap || AppTelemetry.isVerbosePlaybackTelemetryEnabled {
+                        let decision = Self.liveResyncDecision(
+                            localElapsed: elapsed,
+                            currentTrackID: appState.playerState.track?.id,
+                            snapshot: snapshot
+                        )
+                        if decision.shouldSnap || AppTelemetry.isVerbosePlaybackTelemetryEnabled {
                             AppTelemetry.performance.info(
-                                "Live tick watchdog localElapsed=\(elapsed) snapshotElapsed=\(snapshot.elapsedTime) delta=\(snapshotDelta) sameTrack=\(isSameTrack) snap=\(shouldSnap)"
+                                "Live tick watchdog localElapsed=\(elapsed) snapshotElapsed=\(snapshot.elapsedTime) delta=\(decision.snapshotDelta) sameTrack=\(decision.isSameTrack) snap=\(decision.shouldSnap)"
                             )
                         }
-                        if shouldSnap {
-                            if abs(snapshotDelta) > Self.seekDetectionThreshold {
+                        if decision.shouldSnap {
+                            if decision.isSeek {
                                 AppTelemetry.performance.info(
-                                    "SEEK_DETECTED source=watchdog trackID=\(snapshot.track?.id ?? "nil", privacy: .public) localElapsed=\(elapsed) snapshotElapsed=\(snapshot.elapsedTime) delta=\(snapshotDelta)"
+                                    "SEEK_DETECTED source=watchdog track=\(snapshot.track?.telemetryID ?? "none", privacy: .public) localElapsed=\(elapsed) snapshotElapsed=\(snapshot.elapsedTime) delta=\(decision.snapshotDelta)"
                                 )
                                 appState.updatePlayerState(snapshot)
                             }
                             AppTelemetry.performance.info(
-                                "Live tick resync delta=\(snapshotDelta) snap=true"
+                                "Live tick resync delta=\(decision.snapshotDelta) snap=true"
                             )
                             elapsed = snapshot.elapsedTime
                             lastWall = Date()
@@ -373,13 +373,41 @@ final class PlayerController {
                 guard appState.playerState.playbackStatus == .playing,
                       appState.playerState.track != nil else { return }
                 appState.updateLiveElapsedTime(elapsed)
-                onLiveTick?()
             }
         }
     }
 
     static func liveTickInitialElapsed(appState: AppState) -> TimeInterval {
         appState.effectiveElapsedTime
+    }
+
+    static func liveResyncDecision(
+        localElapsed: TimeInterval,
+        currentTrackID: String?,
+        snapshot: PlayerState
+    ) -> LiveResyncDecision {
+        let snapshotDelta = snapshot.elapsedTime - localElapsed
+        let isSameTrack = snapshot.track?.id == currentTrackID
+        let shouldSnap = snapshot.playbackStatus == .playing
+            && snapshot.track != nil
+            && isSameTrack
+            && abs(snapshotDelta) >= Self.resyncSnapThreshold
+        return LiveResyncDecision(
+            snapshotDelta: snapshotDelta,
+            isSameTrack: isSameTrack,
+            shouldSnap: shouldSnap,
+            isSeek: shouldSnap && abs(snapshotDelta) > Self.seekDetectionThreshold
+        )
+    }
+
+    static func liveResyncInterval(consecutiveFailures: Int) -> TimeInterval {
+        guard consecutiveFailures > 0 else {
+            return Self.resyncInterval
+        }
+        return min(
+            Self.resyncFailureBackoffCap,
+            Self.resyncInterval + Double(consecutiveFailures) * 2.0
+        )
     }
 
     // MARK: - Mock Preview
@@ -424,7 +452,7 @@ final class PlayerController {
         appState?.setMockPreviewRunning(false)
     }
 
-    private func nextRefreshInterval(
+    func nextRefreshInterval(
         currentState: PlayerState,
         lyricsDocument: LyricsDocument
     ) -> TimeInterval {
@@ -433,7 +461,8 @@ final class PlayerController {
         }
         guard let nextLineStart = syncEngine.nextLineStart(
             in: lyricsDocument,
-            after: currentState.elapsedTime
+            after: currentState.elapsedTime,
+            duration: currentState.track?.duration
         ) else {
             return Self.hiddenIdleRefreshInterval
         }

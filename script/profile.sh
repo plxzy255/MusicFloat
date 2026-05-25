@@ -34,26 +34,34 @@ usage() {
   cat >&2 <<'EOF'
 usage:
   script/profile.sh list
-  script/profile.sh record [template] [duration] [--demo] [--live] [--drive-music] [--scenario name]
-  script/profile.sh phased [--demo] [--live] [--drive-music] [--scenario name]
-  script/profile.sh sample [duration] [--demo] [--live] [--drive-music] [--scenario name]
+  script/profile.sh record [template] [duration] [--demo] [--live] [--drive-music] [--apple-translation] [--scenario name]
+  script/profile.sh phased [--demo] [--live] [--drive-music] [--apple-translation] [--scenario name]
+  script/profile.sh sample [duration] [--demo] [--live] [--drive-music] [--apple-translation] [--scenario name]
   script/profile.sh report
-  script/profile.sh compare-runs <baseline-run-id> <candidate-run-id>
+  script/profile.sh compare-runs [--strict] <baseline-run-id> <candidate-run-id>
   script/profile.sh preflight-live [--drive-music]
+  script/profile.sh doctor
   script/profile.sh disk
   script/profile.sh open [template]
   script/profile.sh compare <trace-a> <trace-b>
   script/profile.sh clean
 
+Use --apple-translation, or set ENABLE_APPLE_TRANSLATION_BUILD=1, to profile an
+explicit Release build with Apple Translation/NaturalLanguage linked. Default
+Release profiling keeps that framework cost out of the baseline.
+
 examples:
   script/profile.sh list
   script/profile.sh record "Time Profiler" 20s
   script/profile.sh record "Allocations" 30s --live --scenario overlay-karaoke
+  script/profile.sh sample 30s --demo --apple-translation --scenario translation-enabled-overlay
   script/profile.sh phased --live --scenario overlay-karaoke
   script/profile.sh sample 30s --live --scenario overlay-karaoke
   script/profile.sh report
   script/profile.sh compare-runs 20260524-aaa 20260524-bbb
+  script/profile.sh compare-runs --strict 20260524-aaa 20260524-bbb
   script/profile.sh preflight-live
+  script/profile.sh doctor
   script/profile.sh disk
   script/profile.sh open "SwiftUI"
   script/profile.sh compare traces/0.0.1-Time-Profiler.trace traces/0.0.2-Time-Profiler.trace
@@ -72,17 +80,48 @@ examples:
                user's active playback.
 --scenario: Names the workflow being measured so future comparisons do not mix
             unrelated evidence.
+--apple-translation: Builds with ENABLE_APPLE_TRANSLATION so Translation and
+                     NaturalLanguage cost is measured in a dedicated lane.
 EOF
 }
 
+apple_translation_build_enabled() {
+  case "${ENABLE_APPLE_TRANSLATION_BUILD:-0}" in
+    1|true|TRUE|yes|YES)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+apply_build_profile_flags() {
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --apple-translation|--translation-enabled)
+        ENABLE_APPLE_TRANSLATION_BUILD=1
+        ;;
+    esac
+    shift
+  done
+}
+
 build_app() {
-  /usr/bin/xcodebuild \
-    -project "$PROJECT" \
-    -scheme "$SCHEME" \
-    -configuration "$CONFIGURATION" \
-    -destination "platform=macOS,arch=arm64" \
-    -derivedDataPath "$DERIVED_DATA_DIR" \
-    build
+  local build_command=(
+    /usr/bin/xcodebuild
+    -project "$PROJECT"
+    -scheme "$SCHEME"
+    -configuration "$CONFIGURATION"
+    -destination "platform=macOS,arch=arm64"
+    -derivedDataPath "$DERIVED_DATA_DIR"
+  )
+  if apple_translation_build_enabled; then
+    build_command+=(SWIFT_ACTIVE_COMPILATION_CONDITIONS=ENABLE_APPLE_TRANSLATION)
+  fi
+  build_command+=(build)
+
+  "${build_command[@]}"
 }
 
 stop_app() {
@@ -103,6 +142,19 @@ print_artifact_usage() {
   echo "  Artifact usage:"
   printf "    traces:      %s (%s)\n" "$(artifact_size "$TRACE_DIR")" "$TRACE_DIR"
   printf "    DerivedData: %s (%s)\n" "$(artifact_size "$DERIVED_DATA_DIR")" "$DERIVED_DATA_DIR"
+}
+
+run_doctor_step() {
+  local label="$1"
+  shift
+  echo "== $label =="
+  set +e
+  "$@"
+  local status="$?"
+  set -e
+  if [[ "$status" -ne 0 ]]; then
+    echo "status=$status"
+  fi
 }
 
 mode_name() {
@@ -148,7 +200,7 @@ parse_sample_duration() {
 
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
-      --demo|--live|--drive-music)
+      --demo|--live|--drive-music|--apple-translation|--translation-enabled)
         shift
         ;;
       --scenario)
@@ -321,6 +373,224 @@ APPLESCRIPT
   fi
 }
 
+doctor_music_preflight() {
+  local pgrep_log
+  pgrep_log="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/musicfloat-doctor-pgrep.XXXXXX")"
+  set +e
+  /usr/bin/pgrep -x Music >/dev/null 2>"$pgrep_log"
+  local pgrep_status="$?"
+  set -e
+  if [[ "$pgrep_status" -eq 1 ]]; then
+    echo "music_running=false"
+    echo "note=read-only; does not start playback or print track metadata"
+    return 0
+  fi
+  if [[ "$pgrep_status" -ne 0 ]]; then
+    echo "live_preflight=unavailable"
+    echo "reason=process_list_unavailable"
+    /usr/bin/head -4 "$pgrep_log" | /usr/bin/sed 's/^/detail=/'
+    return 0
+  fi
+
+  local info
+  set +e
+  info="$(/usr/bin/osascript <<'APPLESCRIPT' 2>&1
+tell application "Music"
+  set playbackState to player state as string
+  set hasTrack to false
+  try
+    set trackName to name of current track
+    if trackName is not "" then set hasTrack to true
+  end try
+end tell
+
+return "music_running=true" & tab & "playback_state=" & playbackState & tab & "has_track=" & hasTrack
+APPLESCRIPT
+)"
+  local status="$?"
+  set -e
+
+  if [[ "$status" -ne 0 ]]; then
+    echo "live_preflight=unavailable"
+    echo "reason=music_apple_event_unavailable"
+    echo "$info" | /usr/bin/sed 's/^/detail=/'
+    return 0
+  fi
+
+  printf "%s\n" "$info" | /usr/bin/tr '\t' '\n'
+  echo "note=read-only; does not start playback or print track metadata"
+}
+
+doctor_snapshot_readiness() {
+  if [[ -x "script/profile_snapshot.sh" ]]; then
+    echo "profile_snapshot=available"
+  elif [[ -f "script/profile_snapshot.sh" ]]; then
+    echo "profile_snapshot=present_not_executable"
+  else
+    echo "profile_snapshot=missing"
+    return 0
+  fi
+
+  local tracked_dirty untracked_count
+  tracked_dirty="$([[ -n "$(git status --porcelain --untracked-files=no)" ]] && printf true || printf false)"
+  untracked_count="$(git status --porcelain --untracked-files=all | /usr/bin/awk '/^\?\?/ { count += 1 } END { print count + 0 }')"
+  echo "tracked_dirty=$tracked_dirty"
+  echo "untracked_count=$untracked_count"
+  if [[ "$tracked_dirty" == "true" || "$untracked_count" != "0" ]]; then
+    echo "clean_snapshot_needed=true"
+    echo "snapshot_command=script/profile_snapshot.sh -- ./script/profile.sh sample 30s --demo --scenario overlay-karaoke"
+  else
+    echo "clean_snapshot_needed=false"
+  fi
+}
+
+doctor_xcodebuildmcp() {
+  if ! command -v xcodebuildmcp >/dev/null 2>&1; then
+    echo "xcodebuildmcp=missing"
+    return 0
+  fi
+
+  printf "xcodebuildmcp=%s\n" "$(command -v xcodebuildmcp)"
+  printf "version="
+  xcodebuildmcp --version || true
+  echo "codex_tool_hint=XcodeBuildMCP may surface as Xcode or mcp__xcode__ tools after session reload"
+
+  if [[ -f ".xcodebuildmcp/config.yaml" ]]; then
+    echo "config=.xcodebuildmcp/config.yaml"
+    /usr/bin/awk '
+      /^enabledWorkflows:/ { in_workflows=1; next }
+      in_workflows && /^[[:space:]]*-/ {
+        item=$0
+        sub(/^[[:space:]]*-[[:space:]]*/, "", item)
+        printf "workflow=%s\n", item
+        next
+      }
+      in_workflows && /^[^[:space:]]/ { in_workflows=0 }
+      /^  projectPath:/ || /^  scheme:/ || /^  configuration:/ ||
+      /^  platform:/ || /^  arch:/ || /^  derivedDataPath:/ || /^  bundleId:/ {
+        line=$0
+        sub(/^[[:space:]]*/, "", line)
+        printf "default_%s\n", line
+      }
+    ' .xcodebuildmcp/config.yaml
+  else
+    echo "config=missing"
+  fi
+
+  local tools_json tools_status
+  set +e
+  tools_json="$(xcodebuildmcp tools --json --workflow macos 2>&1)"
+  tools_status="$?"
+  set -e
+  if [[ "$tools_status" -ne 0 ]]; then
+    echo "macos_tools=unavailable"
+    echo "$tools_json" | /usr/bin/head -6 | /usr/bin/sed 's/^/detail=/'
+    return 0
+  fi
+
+  TOOLS_JSON="$tools_json" /usr/bin/python3 <<'PY'
+import json
+import os
+
+data = json.loads(os.environ["TOOLS_JSON"])
+print(f"macos_tool_count={data.get('toolCount', 0)}")
+for workflow in data.get("workflows", []):
+    for tool in workflow.get("tools", []):
+        command = tool.get("command")
+        if command:
+            print(f"macos_tool={command}")
+PY
+}
+
+do_doctor() {
+  echo "MusicFloat doctor is read-only. It does not clean, record Instruments, install, or drive Music.app."
+
+  run_doctor_step "git" /bin/sh -c '
+    /usr/bin/git status --short --branch
+    /usr/bin/git rev-parse --short HEAD
+  '
+
+  echo "== profile snapshot =="
+  doctor_snapshot_readiness
+
+  run_doctor_step "xcode" /bin/sh -c '
+    printf "developer_dir="
+    /usr/bin/xcode-select -p
+    /usr/bin/xcodebuild -version
+  '
+
+  run_doctor_step "mcpbridge" /bin/sh -c '
+    if path="$(/usr/bin/xcrun --find mcpbridge 2>/dev/null)"; then
+      printf "mcpbridge=%s\n" "$path"
+    else
+      echo "mcpbridge=missing"
+    fi
+  '
+
+  echo "== xcodebuildmcp =="
+  doctor_xcodebuildmcp
+
+  echo "== xctrace =="
+  local xctrace_log
+  xctrace_log="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/musicfloat-doctor-xctrace.XXXXXX")"
+  set +e
+  /usr/bin/python3 - "$xctrace_log" <<'PY'
+import subprocess
+import sys
+
+log_path = sys.argv[1]
+with open(log_path, "wb") as log:
+    proc = subprocess.run(
+        ["/usr/bin/xcrun", "xctrace", "list", "templates"],
+        stdout=log,
+        stderr=subprocess.STDOUT,
+    )
+if proc.returncode < 0:
+    raise SystemExit(128 + abs(proc.returncode))
+raise SystemExit(proc.returncode)
+PY
+  local xctrace_status="$?"
+  set -e
+  if [[ "$xctrace_status" -eq 0 ]]; then
+    echo "xctrace_templates=available"
+    /usr/bin/grep -E "^[[:space:]]+[A-Za-z]" "$xctrace_log" | /usr/bin/head -8 || true
+  else
+    echo "xctrace_templates=unavailable"
+    echo "status=$xctrace_status"
+    /usr/bin/head -8 "$xctrace_log" | /usr/bin/sed 's/^/detail=/'
+  fi
+
+  run_doctor_step "bundle identity" /bin/sh -c '
+    script/version.sh show
+    script/version.sh installed
+    script/version.sh running
+  '
+
+  echo "== live preflight =="
+  doctor_music_preflight
+
+  echo "== artifacts =="
+  print_artifact_usage
+
+  echo "== codex actions =="
+  if [[ -f ".codex/environments/environment.toml" ]]; then
+    /usr/bin/awk '
+      /^name = / {
+        name=$0
+        sub(/^name = "/, "", name)
+        sub(/"$/, "", name)
+      }
+      /^command = / {
+        sub(/^command = "/, "")
+        sub(/"$/, "")
+        printf "action=%s command=%s\n", name, $0
+      }
+    ' .codex/environments/environment.toml
+  else
+    echo "actions=missing"
+  fi
+}
+
 parse_profile_flags() {
   local use_demo="$1"
   local use_live="$2"
@@ -347,7 +617,7 @@ start_live_log_capture() {
   /usr/bin/log stream \
     --style compact \
     --level debug \
-    --predicate 'subsystem == "cv.MusicFloat"' \
+    --predicate 'subsystem == "cv.MusicFloat" OR process == "MusicFloat"' \
     > "$log_path" 2>&1 &
   echo "$!"
 }
@@ -493,12 +763,14 @@ append_run_ledger() {
   RUN_PR_NUMBER="$(current_pr_number)" \
   RUN_MARKETING_VERSION="$(app_marketing_version)" \
   RUN_BUILD_VERSION="$(app_build_version)" \
+  RUN_APPLE_TRANSLATION_BUILD="$(apple_translation_build_enabled && printf true || printf false)" \
   RUN_TRACKED_DIRTY="$([[ -n "$(git status --porcelain --untracked-files=no)" ]] && printf true || printf false)" \
   RUN_UNTRACKED_COUNT="$(git status --porcelain --untracked-files=all | /usr/bin/awk '/^\\?\\?/ { count += 1 } END { print count + 0 }')" \
   /usr/bin/python3 <<'PY'
 import csv
 import json
 import os
+import re
 from pathlib import Path
 
 def env(name, default=""):
@@ -551,6 +823,94 @@ def artifact_path(path):
     except ValueError:
         return str(p)
 
+def live_verification_summary(path):
+    if not path:
+        return None
+    p = Path(path)
+    if not p.is_file():
+        return None
+    text = p.read_text(errors="replace")
+    summary = {
+        "live_launch": bool(re.search(r"Live mode requested", text)),
+        "bridge_started": bool(re.search(r"Live Apple Music bridge started", text)),
+        "playing_prime": bool(re.search(r"Live prime: status=playing hasTrack=true", text)),
+        "overlay_visible": bool(re.search(r"(Toggle overlay requested visible=true|Showing lyrics overlay for Live Apple Music|Show floating panel)", text)),
+        "overlay_appeared": bool(re.search(r"Lyrics overlay view appeared", text)),
+        "provider_ready": bool(re.search(r"Provider pipeline ready", text)),
+        "driven_event": bool(re.search(r"(SEEK_DETECTED|Live track changed)", text)),
+    }
+    seek_event_count = len(re.findall(r"SEEK_DETECTED", text))
+    watchdog_seek_count = len(re.findall(r"SEEK_DETECTED source=watchdog", text))
+    player_info_seek_count = len(re.findall(r"SEEK_DETECTED source=playerInfoEvent", text))
+    track_change_count = len(re.findall(r"Live track changed", text))
+    resync_count = len(re.findall(r"Live tick resync", text))
+    track_tokens = sorted(set(re.findall(r"\btrack=(track:[0-9a-f]+)", text)))
+    summary["seek_event_count"] = seek_event_count
+    summary["watchdog_seek_count"] = watchdog_seek_count
+    summary["player_info_seek_count"] = player_info_seek_count
+    summary["track_change_count"] = track_change_count
+    summary["resync_count"] = resync_count
+    summary["track_token_count"] = len(track_tokens)
+    summary["track_tokens_sample"] = track_tokens[:8]
+    applied = re.search(
+        r"Lyrics document applied source=(?P<source>[A-Za-z]+).*?line_count=(?P<lines>\d+).*?syllable_count=(?P<syllables>\d+)",
+        text,
+        re.S,
+    )
+    if applied:
+        summary["lyrics_source"] = applied.group("source")
+        summary["line_count"] = int(applied.group("lines"))
+        summary["syllable_count"] = int(applied.group("syllables"))
+    else:
+        summary["lyrics_source"] = None
+        summary["line_count"] = None
+        summary["syllable_count"] = None
+    lookup_ids = sorted(set(re.findall(r"lookup=([A-Za-z0-9_.:-]+)", text)))
+    lines = text.splitlines()
+    # Only count real network/request failures here. Unified logging also
+    # prints AppleEvent timeout parameters such as "timeout 7200", which are
+    # not failed provider requests and should not pollute the ledger.
+    network_timeout_pattern = re.compile(
+        r"(Operation timed out|NSURLErrorTimedOut|NSURLErrorDomain.*-1001|"
+        r"nw_read_request_report.*timed out|request timed out|"
+        r"timed out waiting for|network.*timed out)",
+        re.I,
+    )
+    lookup_pattern = re.compile(r"lookup=([A-Za-z0-9_.:-]+)")
+    timeout_indexes = [
+        index for index, line in enumerate(lines)
+        if network_timeout_pattern.search(line)
+    ]
+    timeout_lookup_ids = set()
+    timeout_near_lookup_ids = set()
+    uncorrelated_timeout_count = 0
+    for index in timeout_indexes:
+        line = lines[index]
+        same_line_ids = [match.group(1) for match in lookup_pattern.finditer(line)]
+        timeout_lookup_ids.update(same_line_ids)
+        window_start = max(0, index - 6)
+        window_end = min(len(lines), index + 7)
+        nearby_ids = [
+            match.group(1)
+            for nearby in lines[window_start:window_end]
+            for match in lookup_pattern.finditer(nearby)
+        ]
+        timeout_near_lookup_ids.update(nearby_ids)
+        if not same_line_ids and not nearby_ids:
+            uncorrelated_timeout_count += 1
+    timeout_lookup_ids = sorted(timeout_lookup_ids)
+    timeout_near_lookup_ids = sorted(timeout_near_lookup_ids)
+    summary["lookup_count"] = len(lookup_ids)
+    summary["lookup_ids_sample"] = lookup_ids[:8]
+    summary["network_timeout_count"] = len(timeout_indexes)
+    summary["timeout_with_lookup_count"] = len(timeout_lookup_ids)
+    summary["timeout_lookup_ids_sample"] = timeout_lookup_ids[:8]
+    summary["timeout_near_lookup_ids_sample"] = timeout_near_lookup_ids[:8]
+    summary["uncorrelated_timeout_count"] = uncorrelated_timeout_count
+    summary["translation_ready"] = bool(re.search(r"Translation ready", text))
+    summary["translation_cache_hits"] = len(re.findall(r"Translation cache hit", text))
+    return summary
+
 record = {
     "schema": 1,
     "run_id": env("RUN_ID"),
@@ -575,6 +935,7 @@ record = {
     "app": {
         "marketing_version": env("RUN_MARKETING_VERSION") or None,
         "build_version": env("RUN_BUILD_VERSION") or None,
+        "apple_translation_build": env("RUN_APPLE_TRANSLATION_BUILD") == "true",
     },
     "usage": usage,
     "artifacts": {
@@ -583,6 +944,7 @@ record = {
         "usage_csv": artifact_path(usage_path),
         "live_log": artifact_path(env("RUN_LIVE_LOG_PATH")),
     },
+    "live_verification": live_verification_summary(env("RUN_LIVE_LOG_PATH")),
 }
 
 with open(env("RUN_LEDGER"), "a") as f:
@@ -629,16 +991,21 @@ verify_live_recording() {
 verify_live_log() {
   local log_path="$1"
   local drive_music="${2:-false}"
+  local missing=0
 
-  require_live_log_pattern "$log_path" "Live mode requested" "live launch"
-  require_live_log_pattern "$log_path" "Live Apple Music bridge started" "live bridge start"
-  require_live_log_pattern "$log_path" "Live prime: status=playing hasTrack=true" "playing Apple Music prime"
-  require_live_log_pattern "$log_path" "Toggle overlay requested visible=true" "overlay toggle"
-  require_live_log_pattern "$log_path" "Lyrics overlay view appeared" "overlay appearance"
-  require_live_log_pattern "$log_path" "Lyrics document applied source=(appleMusicWeb|lrclib|musicApp|musicAppUI|publicProvider)" "non-mock lyrics document"
-  require_live_log_pattern "$log_path" "Provider pipeline ready" "provider ready state"
+  require_live_log_pattern "$log_path" "Live mode requested" "live launch" || missing=1
+  require_live_log_pattern "$log_path" "Live Apple Music bridge started" "live bridge start" || missing=1
+  require_live_log_pattern "$log_path" "Live prime: status=playing hasTrack=true" "playing Apple Music prime" || missing=1
+  require_live_log_pattern "$log_path" "(Toggle overlay requested visible=true|Showing lyrics overlay for Live Apple Music|Show floating panel)" "overlay show" || missing=1
+  require_live_log_pattern "$log_path" "Lyrics overlay view appeared" "overlay appearance" || missing=1
+  require_live_log_pattern "$log_path" "Lyrics document applied source=(appleMusicWeb|lrclib|musicApp|musicAppUI|publicProvider)" "non-mock lyrics document" || missing=1
+  require_live_log_pattern "$log_path" "Provider pipeline ready" "provider ready state" || missing=1
   if [[ "$drive_music" == "true" ]]; then
-    require_live_log_pattern "$log_path" "(SEEK_DETECTED|Live track changed)" "driven seek or track-change event"
+    require_live_log_pattern "$log_path" "(SEEK_DETECTED|Live track changed)" "driven seek or track-change event" || missing=1
+  fi
+
+  if [[ "$missing" -ne 0 ]]; then
+    return 1
   fi
 
   echo "  Live verification: playback, overlay, and non-mock lyrics confirmed"
@@ -731,6 +1098,7 @@ record_one() {
 
 # ── record (single template) ────────────────────────────────────────────────
 do_record() {
+  apply_build_profile_flags "$@"
   local template="${2:-Time Profiler}"
   local duration="${3:-20s}"
   local use_demo="false"
@@ -758,6 +1126,7 @@ do_record() {
   echo "  Demo mode: $use_demo"
   echo "  Live mode: $use_live"
   echo "  Drive Music: $drive_music"
+  echo "  Apple Translation build: $(apple_translation_build_enabled && printf true || printf false)"
   echo ""
 
   record_one "$template" "$duration" "$use_demo" "$use_live" "$scenario" "$drive_music"
@@ -766,6 +1135,7 @@ do_record() {
 
 # ── phased (all templates in sequence) ──────────────────────────────────────
 do_phased() {
+  apply_build_profile_flags "$@"
   local use_demo="false"
   local use_live="false"
   local drive_music="false"
@@ -792,7 +1162,7 @@ do_phased() {
 
   echo ""
   echo "  ═══════════════════════════════════════════════════════════"
-  printf "  Phased profiling: %d templates | Demo: %s | Live: %s | Drive Music: %s\n" "$total" "$use_demo" "$use_live" "$drive_music"
+  printf "  Phased profiling: %d templates | Demo: %s | Live: %s | Drive Music: %s | Apple Translation build: %s\n" "$total" "$use_demo" "$use_live" "$drive_music" "$(apple_translation_build_enabled && printf true || printf false)"
   echo "  ═══════════════════════════════════════════════════════════"
   echo ""
 
@@ -821,6 +1191,7 @@ do_phased() {
 
 # ── sample: direct run with ps-based CPU/RSS sampling ───────────────────────
 do_sample() {
+  apply_build_profile_flags "$@"
   local duration
   duration="$(parse_sample_duration "$@")"
   local use_demo="false"
@@ -870,7 +1241,7 @@ do_sample() {
     /bin/sleep 0.5
   fi
 
-  echo "  Direct sample: ${duration} | Demo: $use_demo | Live: $use_live | Drive Music: $drive_music"
+  echo "  Direct sample: ${duration} | Demo: $use_demo | Live: $use_live | Drive Music: $drive_music | Apple Translation build: $(apple_translation_build_enabled && printf true || printf false)"
   "${launch_args[@]}" >/dev/null 2>&1 &
   usage_log_pid="$(start_usage_capture "$usage_log_path")"
   if [[ "$use_live" == "true" && "$drive_music" == "true" ]]; then
@@ -953,7 +1324,7 @@ for run in runs[-12:]:
     app = run.get("app", {})
     print(
         "{run_id} | {status} | {mode}/{scenario} | pr={pr} | {branch}@{commit} | "
-        "v={version} | avgRSS={rss}MB maxCPU={cpu}% | valid={valid}".format(
+        "v={version} | appleTranslation={translation} | avgRSS={rss}MB maxCPU={cpu}% | valid={valid}".format(
             run_id=run.get("run_id"),
             status=run.get("status"),
             mode=run.get("mode"),
@@ -962,6 +1333,7 @@ for run in runs[-12:]:
             branch=git.get("branch") or "-",
             commit=(git.get("commit") or "")[:8],
             version=app.get("marketing_version") or "-",
+            translation=app.get("apple_translation_build", False),
             rss=usage.get("avg_rss_mb"),
             cpu=usage.get("max_cpu_pct"),
             valid=run.get("valid"),
@@ -972,14 +1344,25 @@ PY
 
 # ── compare-runs: compare two ledger entries ───────────────────────────────
 do_compare_runs() {
-  local baseline_id="${2:-}"
-  local candidate_id="${3:-}"
+  local strict="false"
+  local args=()
+  local arg
+  for arg in "${@:2}"; do
+    if [[ "$arg" == "--strict" ]]; then
+      strict="true"
+    else
+      args+=("$arg")
+    fi
+  done
+
+  local baseline_id="${args[0]:-}"
+  local candidate_id="${args[1]:-}"
   if [[ -z "$baseline_id" || -z "$candidate_id" ]]; then
-    echo "usage: script/profile.sh compare-runs <baseline-run-id> <candidate-run-id>" >&2
+    echo "usage: script/profile.sh compare-runs [--strict] <baseline-run-id> <candidate-run-id>" >&2
     exit 2
   fi
 
-  BASELINE_RUN_ID="$baseline_id" CANDIDATE_RUN_ID="$candidate_id" RUN_LEDGER="$RUN_LEDGER" /usr/bin/python3 <<'PY'
+  BASELINE_RUN_ID="$baseline_id" CANDIDATE_RUN_ID="$candidate_id" STRICT_COMPARE="$strict" RUN_LEDGER="$RUN_LEDGER" /usr/bin/python3 <<'PY'
 import json
 import os
 from pathlib import Path
@@ -987,6 +1370,7 @@ from pathlib import Path
 ledger = Path(os.environ["RUN_LEDGER"])
 baseline_id = os.environ["BASELINE_RUN_ID"]
 candidate_id = os.environ["CANDIDATE_RUN_ID"]
+strict = os.environ.get("STRICT_COMPARE") == "true"
 
 runs = {}
 if ledger.exists():
@@ -1024,12 +1408,22 @@ def delta(key):
 print(f"Baseline:  {baseline_id} {a.get('mode')}/{a.get('scenario')} {a.get('git', {}).get('branch')}@{(a.get('git', {}).get('commit') or '')[:8]}")
 print(f"Candidate: {candidate_id} {b.get('mode')}/{b.get('scenario')} {b.get('git', {}).get('branch')}@{(b.get('git', {}).get('commit') or '')[:8]}")
 
+problems = []
 if a.get("mode") != b.get("mode"):
-    print("WARNING: mixed-mode comparison; do not treat as regression evidence.")
+    problems.append("mixed-mode comparison")
 if a.get("scenario") != b.get("scenario"):
-    print("WARNING: scenario differs; compare cautiously.")
+    problems.append("scenario differs")
+if a.get("app", {}).get("apple_translation_build", False) != b.get("app", {}).get("apple_translation_build", False):
+    problems.append("Apple Translation build setting differs")
 if not a.get("valid") or not b.get("valid"):
-    print("WARNING: at least one run is invalid.")
+    problems.append("at least one run is invalid")
+if a.get("git", {}).get("tracked_dirty") or b.get("git", {}).get("tracked_dirty"):
+    problems.append("tracked source was dirty for at least one run")
+if (a.get("git", {}).get("untracked_count") or 0) > 0 or (b.get("git", {}).get("untracked_count") or 0) > 0:
+    problems.append("untracked files were present for at least one run")
+
+for problem in problems:
+    print(f"WARNING: {problem}; do not treat as regression evidence.")
 
 print("Deltas candidate - baseline:")
 print(f"  avg RSS: {delta('avg_rss_mb')}")
@@ -1043,6 +1437,10 @@ if trace_a is not None and trace_b is not None:
     raw = trace_b - trace_a
     pct = (raw / trace_a * 100) if trace_a else 0
     print(f"  trace size: {raw:+.2f}MB ({pct:+.1f}%)")
+
+if strict and problems:
+    print("STRICT: comparison rejected.")
+    raise SystemExit(3)
 PY
 }
 
@@ -1096,6 +1494,9 @@ case "$mode" in
       [[ "$arg" == "--drive-music" ]] && drive_music="true"
     done
     preflight_live "$drive_music"
+    ;;
+  doctor)
+    do_doctor
     ;;
   disk)
     print_artifact_usage

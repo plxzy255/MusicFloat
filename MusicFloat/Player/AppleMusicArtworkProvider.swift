@@ -3,7 +3,19 @@ import OSLog
 
 @MainActor
 final class AppleMusicArtworkProvider {
+    private let mediaCache: any MediaCache
+    private let artworkDataProvider: () async -> Data?
     private var refreshTask: Task<Void, Never>?
+
+    init(
+        mediaCache: any MediaCache = EphemeralMediaCache(),
+        artworkDataProvider: @escaping () async -> Data? = {
+            await PublicAppleMusicArtworkProvider.currentTrackArtworkData()
+        }
+    ) {
+        self.mediaCache = mediaCache
+        self.artworkDataProvider = artworkDataProvider
+    }
 
     func refreshArtwork(
         for track: NowPlayingTrack?,
@@ -21,8 +33,25 @@ final class AppleMusicArtworkProvider {
 
         appState.applyNowPlayingArtwork(nil, forTrackID: track.id)
         onArtworkChanged?()
+        let cacheKey = Self.artworkCacheKey(for: track)
         refreshTask = Task { @MainActor [weak appState] in
-            let image = await PublicAppleMusicArtworkProvider.currentTrackArtwork()
+            if case .data(let cachedData)? = await mediaCache.value(for: cacheKey),
+               let image = NSImage(data: cachedData) {
+                guard !Task.isCancelled, let appState else { return }
+                AppTelemetry.performance.info("Music artwork cache hit")
+                appState.applyNowPlayingArtwork(image, forTrackID: track.id)
+                onArtworkChanged?()
+                return
+            }
+
+            guard let data = await artworkDataProvider(),
+                  let image = NSImage(data: data) else {
+                guard !Task.isCancelled, let appState else { return }
+                appState.applyNowPlayingArtwork(nil, forTrackID: track.id)
+                onArtworkChanged?()
+                return
+            }
+            await mediaCache.store(.data(data), for: cacheKey)
             guard !Task.isCancelled, let appState else { return }
             appState.applyNowPlayingArtwork(image, forTrackID: track.id)
             onArtworkChanged?()
@@ -34,6 +63,18 @@ final class AppleMusicArtworkProvider {
         refreshTask = nil
         appState.clearNowPlayingArtwork()
         onArtworkChanged?()
+    }
+
+    static func artworkCacheKey(for track: NowPlayingTrack) -> MediaCacheKey {
+        var hasher = Hasher()
+        hasher.combine("artwork-v1")
+        hasher.combine(track.providerName)
+        hasher.combine(track.id)
+        hasher.combine(track.duration)
+        return MediaCacheKey(
+            namespace: .artwork,
+            rawValue: "artwork-v1:\(hasher.finalize())"
+        )
     }
 }
 
@@ -53,7 +94,7 @@ enum PublicAppleMusicArtworkProvider {
     end tell
     """
 
-    static func currentTrackArtwork() async -> NSImage? {
+    static func currentTrackArtworkData() async -> Data? {
         guard await MainActor.run(body: { AppleMusicEventListener.isMusicAppRunning }) else {
             return nil
         }
@@ -65,15 +106,21 @@ enum PublicAppleMusicArtworkProvider {
             return nil
         }
 
-        guard let thumbnailData = await ArtworkImageProcessor.downsampledImageData(from: data),
-              let image = NSImage(data: thumbnailData) else {
+        guard let thumbnailData = await ArtworkImageProcessor.downsampledImageData(from: data) else {
             await MainActor.run {
                 AppTelemetry.performance.info("Music artwork unavailable after thumbnail downsampling")
             }
             return nil
         }
 
-        return image
+        return thumbnailData
+    }
+
+    static func currentTrackArtwork() async -> NSImage? {
+        guard let thumbnailData = await currentTrackArtworkData() else {
+            return nil
+        }
+        return NSImage(data: thumbnailData)
     }
 }
 

@@ -20,6 +20,12 @@ enum AppleMusicCatalogResolver {
         let songID: String
     }
 
+    enum Resolution: Equatable, Sendable {
+        case identity(Identity)
+        case miss
+        case transientFailure
+    }
+
     private static let urlScript = """
     try
         tell application id "com.apple.Music"
@@ -42,10 +48,12 @@ enum AppleMusicCatalogResolver {
         developerToken: String,
         mediaUserToken: String,
         cachedStorefront: String?,
-        session: URLSession = .shared
-    ) async -> Identity? {
-        if let local = await resolveFromAppleScript() {
-            return local
+        session: URLSession = .shared,
+        lookupID: String? = nil
+    ) async -> Resolution {
+        let effectiveLookupID = lookupID ?? Self.makeLookupID()
+        if let local = await resolveFromAppleScript(lookupID: effectiveLookupID) {
+            return .identity(local)
         }
         let storefront = cachedStorefront ?? "us"
         return await resolveViaSearch(
@@ -53,13 +61,14 @@ enum AppleMusicCatalogResolver {
             storefront: storefront,
             developerToken: developerToken,
             mediaUserToken: mediaUserToken,
-            session: session
+            session: session,
+            lookupID: effectiveLookupID
         )
     }
 
     // MARK: - AppleScript URL parsing
 
-    private static func resolveFromAppleScript() async -> Identity? {
+    private static func resolveFromAppleScript(lookupID: String) async -> Identity? {
         guard let raw = await AppleScriptRunner.runStringOffMain(urlScript)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty,
@@ -75,10 +84,11 @@ enum AppleMusicCatalogResolver {
         if let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
            let songID = comps.queryItems?.first(where: { $0.name == "i" })?.value,
            !songID.isEmpty {
-            AppTelemetry.performance.info("AM resolve via AppleScript: storefront=\(storefront, privacy: .public) song=\(songID, privacy: .public)")
+            AppTelemetry.performance.info("AM resolve via AppleScript lookup=\(lookupID, privacy: .public) storefront=\(storefront, privacy: .public) result=hit")
             return Identity(storefront: storefront, songID: songID)
         }
         if parts.count >= 4, parts[1] == "song" {
+            AppTelemetry.performance.info("AM resolve via AppleScript lookup=\(lookupID, privacy: .public) storefront=\(storefront, privacy: .public) result=hit")
             return Identity(storefront: storefront, songID: parts[3])
         }
         return nil
@@ -86,18 +96,21 @@ enum AppleMusicCatalogResolver {
 
     // MARK: - Catalog search fallback
 
-    private struct SearchResponse: Decodable {
-        struct Results: Decodable {
-            struct Songs: Decodable {
-                struct Datum: Decodable {
+    nonisolated private struct SearchResponse: Decodable, Sendable {
+        struct Results: Decodable, Sendable {
+            struct Songs: Decodable, Sendable {
+                struct Datum: Decodable, Sendable {
                     let id: String
                     let attributes: Attributes?
                 }
-                struct Attributes: Decodable {
+                struct Attributes: Decodable, Sendable {
                     let name: String?
                     let artistName: String?
                     let albumName: String?
                     let durationInMillis: Int?
+                    let hasLyrics: Bool?
+                    let hasTimeSyncedLyrics: Bool?
+                    let audioLocale: String?
                 }
                 let data: [Datum]
             }
@@ -111,11 +124,12 @@ enum AppleMusicCatalogResolver {
         storefront: String,
         developerToken: String,
         mediaUserToken: String,
-        session: URLSession
-    ) async -> Identity? {
+        session: URLSession,
+        lookupID: String
+    ) async -> Resolution {
         let term = "\(track.title) \(track.artist)"
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !term.isEmpty else { return nil }
+        guard !term.isEmpty else { return .miss }
 
         var components = URLComponents(string: "https://amp-api.music.apple.com/v1/catalog/\(storefront)/search")!
         components.queryItems = [
@@ -123,7 +137,7 @@ enum AppleMusicCatalogResolver {
             URLQueryItem(name: "types", value: "songs"),
             URLQueryItem(name: "limit", value: "10")
         ]
-        guard let url = components.url else { return nil }
+        guard let url = components.url else { return .miss }
 
         var req = URLRequest(url: url)
         req.timeoutInterval = 5
@@ -137,21 +151,21 @@ enum AppleMusicCatalogResolver {
             let (data, response) = try await session.data(for: req)
             guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
                 if let http = response as? HTTPURLResponse {
-                    AppTelemetry.performance.info("AM search non-2xx status=\(http.statusCode)")
+                    AppTelemetry.performance.info("AM search non-2xx lookup=\(lookupID, privacy: .public) status=\(http.statusCode)")
                 }
-                return nil
+                return .transientFailure
             }
-            let decoded = try JSONDecoder().decode(SearchResponse.self, from: data)
+            let decoded = try await decode(SearchResponse.self, from: data)
             let candidates = decoded.results.songs?.data ?? []
             guard let best = pickBest(from: candidates, track: track) else {
-                AppTelemetry.performance.info("AM search no viable match for title=\(track.title, privacy: .public)")
-                return nil
+                AppTelemetry.performance.info("AM search no viable match lookup=\(lookupID, privacy: .public) candidates=\(candidates.count, privacy: .public)")
+                return .miss
             }
-            AppTelemetry.performance.info("AM resolve via search: storefront=\(storefront, privacy: .public) song=\(best.id, privacy: .public)")
-            return Identity(storefront: storefront, songID: best.id)
+            AppTelemetry.performance.info("AM resolve via search lookup=\(lookupID, privacy: .public) storefront=\(storefront, privacy: .public) result=hit")
+            return .identity(Identity(storefront: storefront, songID: best.id))
         } catch {
-            AppTelemetry.performance.error("AM search failed: \(error.localizedDescription, privacy: .public)")
-            return nil
+            AppTelemetry.performance.error("AM search failed lookup=\(lookupID, privacy: .public) reason=\(Self.safeNetworkReason(error), privacy: .public)")
+            return .transientFailure
         }
     }
 
@@ -163,6 +177,9 @@ enum AppleMusicCatalogResolver {
         let artist = normalize(track.artist)
         let album = normalize(track.album)
         guard !title.isEmpty, !artist.isEmpty else { return items.first }
+        let hasLyricsSignal = items.contains {
+            $0.attributes?.hasLyrics == true || $0.attributes?.hasTimeSyncedLyrics == true
+        }
 
         func score(_ item: SearchResponse.Results.Songs.Datum) -> Double {
             var s = 0.0
@@ -182,6 +199,16 @@ enum AppleMusicCatalogResolver {
                 if delta <= 1.0 { s += 1.5 }
                 else if delta <= 3.0 { s += 0.5 }
             }
+            if item.attributes?.hasTimeSyncedLyrics == true {
+                s += 1.25
+            } else if item.attributes?.hasLyrics == true {
+                s += 0.5
+            } else if hasLyricsSignal {
+                s -= 0.75
+            }
+            if item.attributes?.audioLocale?.isEmpty == false {
+                s += 0.15
+            }
             return s
         }
 
@@ -195,5 +222,34 @@ enum AppleMusicCatalogResolver {
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
             .filter { !$0.isEmpty }
             .joined(separator: " ")
+    }
+
+    nonisolated private static func decode<T: Decodable & Sendable>(
+        _ type: T.Type,
+        from data: Data
+    ) async throws -> T {
+        try await Task.detached(priority: .userInitiated) {
+            try JSONDecoder().decode(type, from: data)
+        }.value
+    }
+
+    private static func safeNetworkReason(_ error: any Error) -> String {
+        guard let urlError = error as? URLError else {
+            return "transport"
+        }
+        switch urlError.code {
+        case .timedOut:
+            return "timedOut"
+        case .cancelled:
+            return "cancelled"
+        case .notConnectedToInternet:
+            return "offline"
+        default:
+            return "urlError-\(urlError.code.rawValue)"
+        }
+    }
+
+    private static func makeLookupID() -> String {
+        String(UUID().uuidString.prefix(8))
     }
 }

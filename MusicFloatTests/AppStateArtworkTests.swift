@@ -131,6 +131,75 @@ final class AppStateArtworkTests: XCTestCase {
     }
 
     @MainActor
+    func testArtworkProviderCachesThumbnailDataForSameTrack() async throws {
+        let defaults = UserDefaults(suiteName: "MusicFloatTests.artworkProviderCache.\(UUID().uuidString)")!
+        let appState = AppState(userDefaults: defaults)
+        appState.setLiveModeRunning(true)
+        let track = NowPlayingTrack(
+            id: "Artist|Album|Private Title",
+            title: "Private Title",
+            artist: "Artist",
+            album: "Album",
+            duration: 180,
+            providerName: "Apple Music"
+        )
+        appState.updatePlayerState(PlayerState(
+            playbackStatus: .playing,
+            track: track,
+            elapsedTime: 0,
+            updatedAt: Date()
+        ))
+        let sourceData = try makeImageData(width: 16, height: 16)
+        var providerRequests = 0
+        let provider = AppleMusicArtworkProvider(
+            mediaCache: EphemeralMediaCache(policy: MediaCachePolicy(maxEntries: 4, maxTotalCost: 128 * 1024)),
+            artworkDataProvider: {
+                providerRequests += 1
+                return sourceData
+            }
+        )
+
+        let firstApplied = expectation(description: "First artwork applied")
+        provider.refreshArtwork(for: track, appState: appState) {
+            if appState.nowPlayingArtwork != nil {
+                firstApplied.fulfill()
+            }
+        }
+        await fulfillment(of: [firstApplied], timeout: 1.0)
+        XCTAssertEqual(providerRequests, 1)
+
+        let secondApplied = expectation(description: "Second artwork applied from cache")
+        provider.refreshArtwork(for: track, appState: appState) {
+            if appState.nowPlayingArtwork != nil {
+                secondApplied.fulfill()
+            }
+        }
+        await fulfillment(of: [secondApplied], timeout: 1.0)
+
+        XCTAssertEqual(providerRequests, 1)
+        XCTAssertNotNil(appState.nowPlayingArtwork)
+    }
+
+    @MainActor
+    func testArtworkCacheKeyDoesNotExposeRawTrackIdentity() {
+        let track = NowPlayingTrack(
+            id: "Artist|Album|Private Title",
+            title: "Private Title",
+            artist: "Artist",
+            album: "Album",
+            duration: 180,
+            providerName: "Apple Music"
+        )
+
+        let key = AppleMusicArtworkProvider.artworkCacheKey(for: track)
+
+        XCTAssertEqual(key.namespace, .artwork)
+        XCTAssertFalse(key.rawValue.contains("Private Title"))
+        XCTAssertFalse(key.rawValue.contains("Artist"))
+        XCTAssertFalse(key.rawValue.contains("Album"))
+    }
+
+    @MainActor
     private func makeImageData(width: Int, height: Int) throws -> Data {
         let image = NSImage(size: NSSize(width: width, height: height))
         image.lockFocus()

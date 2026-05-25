@@ -472,15 +472,12 @@ private struct LyricsLineStackView: View {
                         effectiveLyricTime: snapshot.effectiveLyricTime
                     )
                         .id(row.id)
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .bottom),
-                            removal: .move(edge: .top)
-                        ))
+                        .transition(.opacity)
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .animation(.smooth(duration: 0.34), value: snapshot.lyricWindow)
+        .animation(.easeOut(duration: 0.18), value: snapshot.lyricWindow.map(\.id))
     }
 }
 
@@ -490,14 +487,14 @@ private struct LyricsFallbackLineView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(snapshot.lyricText)
-                .font(.system(.title3, design: .rounded, weight: .semibold))
+                .font(.system(.title3, weight: .semibold))
                 .foregroundStyle(.primary)
                 .lineLimit(2)
                 .minimumScaleFactor(0.78)
 
             if let translationText = snapshot.translationText {
                 Text(translationText)
-                    .font(.system(.callout, design: .rounded))
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
@@ -521,7 +518,7 @@ private struct LyricsOverlayLineRowView: View {
 
             if let translationText = row.translationText {
                 Text(translationText)
-                    .font(.system(.callout, design: .rounded))
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
@@ -529,7 +526,6 @@ private struct LyricsOverlayLineRowView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .opacity(row.role.opacity)
-        .scaleEffect(row.role.scale, anchor: .leading)
         .accessibilityAddTraits(row.role == .active ? .isSelected : [])
     }
 }
@@ -538,49 +534,28 @@ private struct TimedLyricTextView: View {
     let line: LyricLine
     let role: LyricsOverlayLineRole
     let effectiveLyricTime: TimeInterval
-    @State private var animatedProgress: Double?
-    @State private var lastObservedProgress: Double?
 
     var body: some View {
         Group {
-            if let displayProgress,
+            if let progress,
                role == .active {
-                progressText(progress: displayProgress)
+                progressText(progress: progress)
             } else {
                 plainText
             }
         }
-        .animation(syllableProgressAnimation, value: progress ?? -1)
-        .onAppear {
-            startProgressAnimation(resetObservedProgress: true)
-        }
-        .onChange(of: progressAnimationIdentity) {
-            startProgressAnimation(resetObservedProgress: true)
-        }
-        .onChange(of: progress ?? -1) {
-            restartProgressAnimationAfterSeekIfNeeded()
-        }
     }
 
     private var progress: Double? {
-        LyricsOverlaySnapshotBuilder.timedLineProgress(
+        guard usesSyllableTiming else { return nil }
+        return LyricsOverlaySnapshotBuilder.timedLineProgress(
             in: line,
             at: effectiveLyricTime
         )
     }
 
-    private var displayProgress: Double? {
-        guard let progress else { return nil }
-        guard !usesSyllableTiming else { return progress }
-        return animatedProgress ?? progress
-    }
-
     private var usesSyllableTiming: Bool {
-        !line.syllables.isEmpty
-    }
-
-    private var syllableProgressAnimation: Animation? {
-        usesSyllableTiming && role == .active ? .linear(duration: 0.10) : nil
+        LyricsOverlaySnapshotBuilder.shouldRenderKaraokeProgress(for: line)
     }
 
     private var plainText: some View {
@@ -613,68 +588,6 @@ private struct TimedLyricTextView: View {
             }
     }
 
-    private var progressAnimationIdentity: String {
-        "\(line.id)-\(role)-\(line.startTime ?? -1)-\(line.endTime ?? -1)-\(line.text)-\(line.syllables.count)-\(usesSyllableTiming)"
-    }
-
-    private func startProgressAnimation(resetObservedProgress: Bool = false) {
-        guard role == .active,
-              let progress else {
-            animatedProgress = nil
-            lastObservedProgress = nil
-            return
-        }
-
-        if resetObservedProgress {
-            lastObservedProgress = progress
-        }
-
-        guard !usesSyllableTiming else {
-            animatedProgress = nil
-            return
-        }
-
-        animatedProgress = progress
-        guard let endTime = progressEndTime else { return }
-        let remainingDuration = max(0, endTime - effectiveLyricTime)
-        guard remainingDuration > 0.05 else {
-            animatedProgress = 1
-            return
-        }
-
-        withAnimation(.linear(duration: remainingDuration)) {
-            animatedProgress = 1
-        }
-    }
-
-    private func restartProgressAnimationAfterSeekIfNeeded() {
-        guard !usesSyllableTiming,
-              role == .active,
-              let progress else {
-            lastObservedProgress = progress
-            return
-        }
-
-        defer {
-            lastObservedProgress = progress
-        }
-
-        guard let lastObservedProgress else {
-            return
-        }
-
-        let progressDelta = progress - lastObservedProgress
-        guard progressDelta < -0.04 || progressDelta > 0.18 else {
-            return
-        }
-
-        startProgressAnimation()
-    }
-
-    private var progressEndTime: TimeInterval? {
-        return line.endTime
-    }
-
     private var fillAlignment: Alignment {
         line.text.prefersRightToLeftLyricFill ? .trailing : .leading
     }
@@ -684,9 +597,9 @@ private extension LyricsOverlayLineRole {
     var lyricFont: Font {
         switch self {
         case .previous, .next:
-            .system(.callout, design: .rounded, weight: .medium)
+            .system(.callout, weight: .medium)
         case .active:
-            .system(.title3, design: .rounded, weight: .semibold)
+            .system(.title3, weight: .semibold)
         }
     }
 
@@ -694,15 +607,6 @@ private extension LyricsOverlayLineRole {
         switch self {
         case .previous, .next:
             0.54
-        case .active:
-            1
-        }
-    }
-
-    var scale: CGFloat {
-        switch self {
-        case .previous, .next:
-            0.97
         case .active:
             1
         }

@@ -18,6 +18,148 @@ final class PlayerControllerTests: XCTestCase {
     }
 
     @MainActor
+    func testPreviewRefreshUsesTrackDurationForUntimedLyrics() {
+        let controller = PlayerController(bridge: MockMusicAppBridge())
+        let track = NowPlayingTrack(
+            id: "plain-preview-track",
+            title: "Plain",
+            artist: "Artist",
+            album: "Album",
+            duration: 90,
+            providerName: "Test"
+        )
+        let state = PlayerState(
+            playbackStatus: .playing,
+            track: track,
+            elapsedTime: 10,
+            updatedAt: Date()
+        )
+        let document = LyricsDocument(
+            source: .musicApp,
+            lines: [
+                LyricLine(id: 0, text: "First sentence", startTime: nil),
+                LyricLine(id: 1, text: "Second sentence", startTime: nil),
+                LyricLine(id: 2, text: "Third sentence", startTime: nil)
+            ],
+            isTimed: false
+        )
+
+        let interval = controller.nextRefreshInterval(
+            currentState: state,
+            lyricsDocument: document
+        )
+
+        XCTAssertEqual(interval, 20, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testLiveResyncDecisionSnapsSmallDriftWithoutSeek() {
+        let snapshot = PlayerState(
+            playbackStatus: .playing,
+            track: MockMusicAppBridge.previewTrack,
+            elapsedTime: 10.4,
+            updatedAt: Date()
+        )
+
+        let decision = PlayerController.liveResyncDecision(
+            localElapsed: 10,
+            currentTrackID: MockMusicAppBridge.previewTrack.id,
+            snapshot: snapshot
+        )
+
+        XCTAssertEqual(decision.snapshotDelta, 0.4, accuracy: 0.0001)
+        XCTAssertTrue(decision.isSameTrack)
+        XCTAssertTrue(decision.shouldSnap)
+        XCTAssertFalse(decision.isSeek)
+    }
+
+    @MainActor
+    func testLiveResyncDecisionClassifiesLargeSameTrackJumpAsSeek() {
+        let snapshot = PlayerState(
+            playbackStatus: .playing,
+            track: MockMusicAppBridge.previewTrack,
+            elapsedTime: 13,
+            updatedAt: Date()
+        )
+
+        let decision = PlayerController.liveResyncDecision(
+            localElapsed: 10,
+            currentTrackID: MockMusicAppBridge.previewTrack.id,
+            snapshot: snapshot
+        )
+
+        XCTAssertTrue(decision.shouldSnap)
+        XCTAssertTrue(decision.isSeek)
+    }
+
+    @MainActor
+    func testLiveResyncDecisionDoesNotSnapDifferentTrackOrMissingTrack() {
+        let differentTrack = NowPlayingTrack(
+            id: "different-track",
+            title: "Different",
+            artist: "Artist",
+            album: "Album",
+            duration: 180,
+            providerName: "Test"
+        )
+        let differentSnapshot = PlayerState(
+            playbackStatus: .playing,
+            track: differentTrack,
+            elapsedTime: 30,
+            updatedAt: Date()
+        )
+        let missingSnapshot = PlayerState(
+            playbackStatus: .playing,
+            track: nil,
+            elapsedTime: 30,
+            updatedAt: Date()
+        )
+
+        let differentDecision = PlayerController.liveResyncDecision(
+            localElapsed: 10,
+            currentTrackID: MockMusicAppBridge.previewTrack.id,
+            snapshot: differentSnapshot
+        )
+        let missingDecision = PlayerController.liveResyncDecision(
+            localElapsed: 10,
+            currentTrackID: MockMusicAppBridge.previewTrack.id,
+            snapshot: missingSnapshot
+        )
+
+        XCTAssertFalse(differentDecision.shouldSnap)
+        XCTAssertFalse(differentDecision.isSeek)
+        XCTAssertFalse(missingDecision.shouldSnap)
+        XCTAssertFalse(missingDecision.isSeek)
+    }
+
+    @MainActor
+    func testLiveResyncDecisionTreatsSeekThresholdAsNonSeekSnapBoundary() {
+        let snapshot = PlayerState(
+            playbackStatus: .playing,
+            track: MockMusicAppBridge.previewTrack,
+            elapsedTime: 12,
+            updatedAt: Date()
+        )
+
+        let decision = PlayerController.liveResyncDecision(
+            localElapsed: 10,
+            currentTrackID: MockMusicAppBridge.previewTrack.id,
+            snapshot: snapshot
+        )
+
+        XCTAssertTrue(decision.shouldSnap)
+        XCTAssertFalse(decision.isSeek)
+    }
+
+    @MainActor
+    func testLiveResyncFailureIntervalBacksOffAfterMissingSnapshots() {
+        XCTAssertEqual(PlayerController.liveResyncInterval(consecutiveFailures: 0), 1)
+        XCTAssertEqual(PlayerController.liveResyncInterval(consecutiveFailures: 1), 3)
+        XCTAssertEqual(PlayerController.liveResyncInterval(consecutiveFailures: 3), 7)
+        XCTAssertEqual(PlayerController.liveResyncInterval(consecutiveFailures: 20), 10)
+    }
+
+    @MainActor
     func testVolumeCommandClampsBeforeBridge() async {
         let defaults = UserDefaults(suiteName: "MusicFloatTests.volumeClamp.\(UUID().uuidString)")!
         let appState = AppState(userDefaults: defaults)

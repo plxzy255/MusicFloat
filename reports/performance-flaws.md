@@ -16,9 +16,41 @@ Keep raw traces out of git; cite run IDs from `reports/performance-runs.jsonl`.
   but not valid Apple Music live evidence.
 - Current mitigation: `script/profile.sh ... --live` preflight and live-log
   verification, `--drive-music` for seek/next-track live interaction coverage,
-  plus run ledger metadata.
-- Next check: collect a real `--live --drive-music` baseline/candidate pair
-  while Music.app can play a lyric-capable track.
+  run ledger metadata, and `script/profile.sh compare-runs --strict` for
+  agent/CI comparisons that should fail on mixed scenarios, invalid runs, or
+  tracked-dirty source evidence.
+- 2026-05-25 verification: strict comparison rejects incompatible live evidence
+  instead of allowing a successful agent/CI exit. Keep the flaw open because the
+  missing artifact is still a valid live `--drive-music` baseline/candidate
+  pair, not just stricter tooling.
+- 2026-05-25 live follow-up: run
+  `20260525-080546Z-live-Direct-Sample-28b81d4` used
+  `--live --drive-music`, proved Music.app playback, live auto-start overlay,
+  non-mock Apple Music web lyrics (`line_count=64`), provider readiness, a
+  driven seek/track-change event, and zero provider timeout lines. It reported
+  avg RSS 113.69 MB and max CPU 13.9 percent. The row is useful current
+  evidence but not a clean regression baseline because the worktree was dirty.
+- 2026-05-25 clean snapshot live follow-up: run
+  `20260525-142048Z-live-Direct-Sample-52adb7a` came from temporary snapshot
+  commit `52adb7a4` with `tracked_dirty=false`. It proved Music.app playback,
+  live auto-start overlay, non-mock Apple Music web lyrics (`line_count=50`),
+  provider readiness, one watchdog seek, one live-clock resync, and one
+  track-change event. It reported avg RSS 111.28 MB, max RSS 114.27 MB, avg
+  CPU 5.15 percent, and max CPU 23.5 percent. This is clean current-candidate
+  evidence, but still not a baseline/candidate regression pair.
+- 2026-05-25 tooling follow-up: live verification now accepts the live
+  auto-start overlay path and returns failure if any required log token is
+  missing. Short run `20260525-080707Z-live-Direct-Sample-28b81d4` was marked
+  invalid because provider readiness/non-mock lyrics were not proven before the
+  sample ended.
+- 2026-05-25 timeout-summary follow-up: `script/profile.sh` now excludes
+  AppleEvent timeout parameters such as `timeout 7200` from
+  `network_timeout_count`. The clean snapshot row above records zero real
+  network timeout failures after that correction.
+- Next check: collect a clean same-mode `--live --drive-music`
+  baseline/candidate pair while Music.app can play a lyric-capable track. Use
+  `script/profile_snapshot.sh` or a real clean branch/worktree so the measured
+  ledger rows are not dirty-checkout evidence.
 
 ### PERF-002: Raw Instruments artifacts can bloat disk usage
 
@@ -103,8 +135,31 @@ Keep raw traces out of git; cite run IDs from `reports/performance-runs.jsonl`.
   overlay-karaoke` samples `20260524-234057Z-demo-Direct-Sample-19fc78b` vs
   `20260525-001430Z-demo-Direct-Sample-1c1e8af` reported avg RSS
   83.7 MB -> 80.6 MB and max RSS 104.9 MB -> 87.7 MB.
-- Next check: add a dedicated live-translation build/profile path with
-  `ENABLE_APPLE_TRANSLATION` and compare its cost separately from mock/demo.
+- 2026-05-25 follow-up: a fresh default Release build under
+  `.codex/DerivedData` succeeded, and `otool -L` again produced no
+  `Translation`, `_Translation_SwiftUI`, `NaturalLanguage`, or
+  `libswiftNaturalLanguage` linkage.
+- 2026-05-25 tooling follow-up: `script/profile.sh --apple-translation` now
+  creates an explicit Translation/NaturalLanguage profiling lane, the run
+  ledger records `app.apple_translation_build`, and strict run comparison
+  rejects mixed default-vs-translation builds. A local-only smoke run
+  `20260525-074552Z-demo-Direct-Sample-28b81d4` under
+  `/private/tmp/musicfloat-agent/profile-lane-smoke.jsonl` built with
+  `app.apple_translation_build=true`; `otool -L` on that isolated Release app
+  confirmed Translation/NaturalLanguage linkage.
+- 2026-05-25 clean snapshot follow-up: temporary snapshot commit `8af2ba8`
+  produced clean 30s `--demo --scenario translation-enabled-overlay` rows:
+  default run `20260525-082557Z-demo-Direct-Sample-8af2ba8` reported avg RSS
+  79.41 MB, max RSS 81.56 MB, avg CPU 0.30 percent, max CPU 6.7 percent;
+  Apple Translation run `20260525-082703Z-demo-Direct-Sample-8af2ba8` reported
+  avg RSS 75.36 MB, max RSS 77.58 MB, avg CPU 0.33 percent, max CPU 7.7
+  percent. The translation binary linked `Translation`, `_Translation_SwiftUI`,
+  `NaturalLanguage`, and `libswiftNaturalLanguage`. Treat the lower RSS as
+  sample noise, not an improvement claim; the useful result is that no startup
+  RSS jump reproduced in this clean pair.
+- Next check: repeat the clean default-vs-translation pair after real Apple
+  Translation work is exercised, because this demo pair only proves startup and
+  overlay cost when the framework is linked but not actively translating.
 
 ### PERF-003: Deprecated karaoke Text concatenation
 

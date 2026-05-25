@@ -268,6 +268,74 @@ final class ProviderPipelineControllerTests: XCTestCase {
         XCTAssertNotEqual(appState.translationRuntimeState, .ready)
     }
 
+    func testTranslationResultIsCachedForSameDocumentAndTarget() async throws {
+        let defaults = UserDefaults(suiteName: "MusicFloatTests.translationCache.\(UUID().uuidString)")!
+        let appState = AppState(userDefaults: defaults)
+        appState.isOverlayVisible = true
+        appState.updatePlayerState(playerState(trackID: "track:cache"))
+        appState.applyLyricsDocument(LyricsDocument(
+            source: .musicApp,
+            lines: [LyricLine(id: 0, text: "Translate me once", startTime: nil)],
+            isTimed: false,
+            sourceLanguageIdentifier: "en"
+        ))
+        _ = appState.applyPreferences(
+            showsTranslation: true,
+            preferredTranslationLanguageIdentifier: "fr",
+            overlayWidthPreset: .medium,
+            reduceHiddenMemoryUsage: true
+        )
+        let translationProvider = CountingTranslationProvider()
+        let controller = ProviderPipelineController(
+            lyricsProvider: RecordingLyricsProvider(),
+            translationProvider: translationProvider,
+            mediaCache: EphemeralMediaCache(policy: MediaCachePolicy(maxEntries: 4, maxTotalCost: 4096))
+        )
+
+        controller.refreshTranslation(appState: appState)
+        try await waitUntil { appState.translationRuntimeState == .ready }
+        XCTAssertEqual(translationProvider.requestCount, 1)
+
+        appState.clearTranslation()
+        appState.setTranslationRuntimeState(.idle)
+        controller.refreshTranslation(appState: appState)
+        try await waitUntil { appState.translationRuntimeState == .ready }
+
+        XCTAssertEqual(translationProvider.requestCount, 1)
+        XCTAssertEqual(appState.translation.text(for: LyricLine(id: 0, text: "Translate me once", startTime: nil)), "Traduit")
+    }
+
+    func testTranslationCacheKeyChangesWithLyricContentWithoutExposingRawText() {
+        let first = LyricsDocument(
+            source: .musicApp,
+            lines: [LyricLine(id: 0, text: "Private lyric text", startTime: nil)],
+            isTimed: false,
+            sourceLanguageIdentifier: "en"
+        )
+        let second = LyricsDocument(
+            source: .musicApp,
+            lines: [LyricLine(id: 0, text: "Different private lyric text", startTime: nil)],
+            isTimed: false,
+            sourceLanguageIdentifier: "en"
+        )
+
+        let firstKey = ProviderPipelineController.translationCacheKey(
+            providerIdentifier: "test-provider",
+            targetLanguageIdentifier: "fr-FR",
+            document: first
+        )
+        let secondKey = ProviderPipelineController.translationCacheKey(
+            providerIdentifier: "test-provider",
+            targetLanguageIdentifier: "fr-FR",
+            document: second
+        )
+
+        XCTAssertEqual(firstKey.namespace, .translation)
+        XCTAssertNotEqual(firstKey.rawValue, secondKey.rawValue)
+        XCTAssertFalse(firstKey.rawValue.contains("Private lyric text"))
+        XCTAssertFalse(secondKey.rawValue.contains("Different private lyric text"))
+    }
+
     private final class RecordingLyricsProvider: LyricsProvider {
         let displayName = "Recording lyrics provider"
         private(set) var requestedTrackIDs: [String] = []
@@ -377,6 +445,23 @@ final class ProviderPipelineControllerTests: XCTestCase {
         }
     }
 
+    private final class CountingTranslationProvider: TranslationProvider {
+        let displayName = "Counting translation provider"
+        private(set) var requestCount = 0
+
+        func translation(
+            for document: LyricsDocument,
+            targetLanguageIdentifier: String
+        ) async -> TranslationProviderResult {
+            requestCount += 1
+            return .available(LyricTranslation(
+                targetLanguageIdentifier: targetLanguageIdentifier,
+                sourceLanguageIdentifier: document.sourceLanguageIdentifier,
+                lines: [TranslatedLyricLine(id: 0, sourceLineID: 0, text: "Traduit")]
+            ))
+        }
+    }
+
     private func playerState(trackID: String) -> PlayerState {
         PlayerState(
             playbackStatus: .playing,
@@ -391,5 +476,19 @@ final class ProviderPipelineControllerTests: XCTestCase {
             elapsedTime: 0,
             updatedAt: Date()
         )
+    }
+
+    private func waitUntil(
+        _ predicate: @MainActor @escaping () -> Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        for _ in 0..<50 {
+            if predicate() {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTFail("Timed out waiting for condition", file: file, line: line)
     }
 }

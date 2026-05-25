@@ -7,13 +7,13 @@ import NaturalLanguage
 extension TranslationSession.Request: @unchecked @retroactive Sendable {}
 #endif
 
-struct TranslatedLyricLine: Equatable, Identifiable, Sendable {
+struct TranslatedLyricLine: Codable, Equatable, Identifiable, Sendable {
     let id: Int
     let sourceLineID: LyricLine.ID
     let text: String
 }
 
-struct LyricTranslation: Equatable, Sendable {
+struct LyricTranslation: Codable, Equatable, Sendable {
     let targetLanguageIdentifier: String
     let sourceLanguageIdentifier: String?
     let lines: [TranslatedLyricLine]

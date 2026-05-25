@@ -5,7 +5,7 @@ import Foundation
 /// Two shapes are supported:
 /// - LRC (timed): `[mm:ss.xx] line` repeated, with optional `[offset:+/-ms]`.
 /// - Plain: one line per logical lyric line, no timing.
-enum LyricsParser {
+nonisolated enum LyricsParser {
     /// Returns a timed document if the input parses as LRC. Returns nil if no
     /// LRC timestamps were found.
     static func parseLRC(_ raw: String, source: LyricsSource) -> LyricsDocument? {

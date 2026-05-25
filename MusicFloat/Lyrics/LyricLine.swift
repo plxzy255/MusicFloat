@@ -1,12 +1,12 @@
 import Foundation
 
-struct LyricSyllable: Equatable, Sendable {
+nonisolated struct LyricSyllable: Equatable, Sendable {
     let text: String
     let startTime: TimeInterval
     let endTime: TimeInterval
 }
 
-struct LyricLine: Equatable, Identifiable, Sendable {
+nonisolated struct LyricLine: Equatable, Identifiable, Sendable {
     let id: Int
     let text: String
     let startTime: TimeInterval?
@@ -31,7 +31,7 @@ struct LyricLine: Equatable, Identifiable, Sendable {
     }
 }
 
-enum LyricsSource: String, Equatable, Sendable {
+nonisolated enum LyricsSource: String, Equatable, Sendable {
     case mock
     case musicApp
     case musicAppUI
@@ -60,7 +60,7 @@ enum LyricsSource: String, Equatable, Sendable {
     }
 }
 
-struct LyricsDocument: Equatable, Sendable {
+nonisolated struct LyricsDocument: Equatable, Sendable {
     let source: LyricsSource
     let lines: [LyricLine]
     let isTimed: Bool

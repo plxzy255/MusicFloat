@@ -50,6 +50,40 @@ final class LyricsSyncEngineTests: XCTestCase {
     }
 
     @MainActor
+    func testUntimedDocumentEstimatesActiveLineFromTrackDuration() {
+        let document = LyricsDocument(
+            source: .lrclib,
+            lines: [
+                LyricLine(id: 0, text: "short", startTime: nil),
+                LyricLine(id: 1, text: "a much longer plain lyric line", startTime: nil),
+                LyricLine(id: 2, text: "ending", startTime: nil)
+            ],
+            isTimed: false
+        )
+
+        let activeLine = LyricsSyncEngine().activeLine(in: document, at: 30, duration: 60)
+
+        XCTAssertEqual(activeLine?.id, 1)
+    }
+
+    @MainActor
+    func testUntimedDocumentUsesLineSlotsInsteadOfWordWeighting() {
+        let document = LyricsDocument(
+            source: .lrclib,
+            lines: [
+                LyricLine(id: 0, text: "a very long untimed lyric sentence that should not occupy half the song", startTime: nil),
+                LyricLine(id: 1, text: "short sentence", startTime: nil),
+                LyricLine(id: 2, text: "ending", startTime: nil)
+            ],
+            isTimed: false
+        )
+
+        let activeLine = LyricsSyncEngine().activeLine(in: document, at: 31, duration: 90)
+
+        XCTAssertEqual(activeLine?.id, 1)
+    }
+
+    @MainActor
     func testEmptyDocumentReturnsNil() {
         let document = LyricsDocument(source: .mock, lines: [], isTimed: true)
 
@@ -84,6 +118,21 @@ final class LyricsSyncEngineTests: XCTestCase {
         )
 
         XCTAssertNil(LyricsSyncEngine().nextLineStart(in: document, after: 0))
+    }
+
+    @MainActor
+    func testNextLineStartEstimatesUpcomingUntimedBoundary() {
+        let document = LyricsDocument(
+            source: .lrclib,
+            lines: [
+                LyricLine(id: 0, text: "one", startTime: nil),
+                LyricLine(id: 1, text: "two words", startTime: nil),
+                LyricLine(id: 2, text: "three word line", startTime: nil)
+            ],
+            isTimed: false
+        )
+
+        XCTAssertEqual(LyricsSyncEngine().nextLineStart(in: document, after: 12, duration: 60), 20)
     }
 
     @MainActor

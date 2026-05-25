@@ -193,7 +193,7 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
                     let event = playerInfoEvent.state
                     if AppTelemetry.isVerbosePlaybackTelemetryEnabled {
                         AppTelemetry.performance.debug(
-                            "playerInfo raw=\(playerInfoEvent.rawSummary, privacy: .public) parsedTrackID=\(event.track?.id ?? "nil", privacy: .public) parsedElapsed=\(event.elapsedTime)"
+                            "playerInfo event=\(playerInfoEvent.sanitizedSummary, privacy: .public) parsedTrack=\(event.track?.telemetryID ?? "none", privacy: .public) parsedElapsed=\(event.elapsedTime)"
                         )
                     }
                     // Notifications do not carry `player position`. Refine with
@@ -215,9 +215,9 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
                             }
                             if let eventTrack = event.track,
                                let snapshotTrack = snapshot.track,
-                               eventTrack.id != snapshotTrack.id {
+                                eventTrack.id != snapshotTrack.id {
                                 AppTelemetry.performance.info(
-                                    "Music snapshot lagged new-track event; eventTrackID=\(eventTrack.id, privacy: .public) snapshotTrackID=\(snapshotTrack.id, privacy: .public) starting lyrics fetch without stale elapsed"
+                                    "Music snapshot lagged new-track event; eventTrack=\(eventTrack.telemetryID, privacy: .public) snapshotTrack=\(snapshotTrack.telemetryID, privacy: .public) starting lyrics fetch without stale elapsed"
                                 )
                                 continue
                             }
@@ -240,7 +240,7 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
 
                     if AppTelemetry.isVerbosePlaybackTelemetryEnabled {
                         AppTelemetry.performance.debug(
-                            "playerInfo refined trackID=\(refined.track?.id ?? "nil", privacy: .public) elapsed=\(refined.elapsedTime) refineOK=\(refinedEvent.refineSucceeded)"
+                            "playerInfo refined track=\(refined.track?.telemetryID ?? "none", privacy: .public) elapsed=\(refined.elapsedTime) refineOK=\(refinedEvent.refineSucceeded)"
                         )
                     }
                     continuation.yield(refined)
