@@ -537,6 +537,8 @@ private struct LyricsOverlayLineRowView: View {
 }
 
 private struct TimedLyricTextView: View {
+    private static let lyricProgressRefreshInterval: TimeInterval = 0.12
+
     let line: LyricLine
     let role: LyricsOverlayLineRole
     let effectiveLyricTime: TimeInterval
@@ -547,7 +549,7 @@ private struct TimedLyricTextView: View {
         if role == .active,
            usesSyllableTiming,
            isLyricClockRunning {
-            TimelineView(.animation) { context in
+            TimelineView(.periodic(from: lyricClockReferenceDate, by: Self.lyricProgressRefreshInterval)) { context in
                 timedText(at: effectiveLyricTime(at: context.date))
             }
         } else {
