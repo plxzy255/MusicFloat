@@ -249,6 +249,7 @@ final class AppleTranslationProvider: TranslationProvider {
             return .status(.unavailable(reason: "No lyric lines to translate"))
         }
 
+        #if ENABLE_APPLE_TRANSLATION
         let inferredSourceIdentifier = document.sourceLanguageIdentifier
             ?? Self.inferSourceLanguageIdentifier(from: document.lines)
         guard let sourceIdentifier = inferredSourceIdentifier else {
@@ -319,6 +320,9 @@ final class AppleTranslationProvider: TranslationProvider {
             AppTelemetry.performance.error("Apple translation failed: \(error.localizedDescription, privacy: .public)")
             return .status(.failed(reason))
         }
+        #else
+        return .status(.unavailable(reason: "Apple Translation is not enabled in this build"))
+        #endif
     }
 
     private static func failureMessage(for error: any Error) -> String {

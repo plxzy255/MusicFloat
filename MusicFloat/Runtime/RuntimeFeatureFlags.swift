@@ -26,7 +26,11 @@ nonisolated enum RuntimeAdapterMode: String, CaseIterable, Identifiable, Sendabl
         case .mock:
             "Mock translation provider"
         case .publicApple:
+            #if ENABLE_APPLE_TRANSLATION
             "Apple on-device translation"
+            #else
+            "Apple on-device translation (not enabled in this build)"
+            #endif
         case .experimental:
             "Experimental translation provider placeholder"
         case .disabled:
