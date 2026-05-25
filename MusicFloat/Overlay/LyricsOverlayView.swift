@@ -469,7 +469,9 @@ private struct LyricsLineStackView: View {
                 ForEach(snapshot.lyricWindow) { row in
                     LyricsOverlayLineRowView(
                         row: row,
-                        effectiveLyricTime: snapshot.effectiveLyricTime
+                        effectiveLyricTime: snapshot.effectiveLyricTime,
+                        lyricClockReferenceDate: snapshot.lyricClockReferenceDate,
+                        isLyricClockRunning: snapshot.isLyricClockRunning
                     )
                         .id(row.id)
                         .transition(.opacity)
@@ -507,13 +509,17 @@ private struct LyricsFallbackLineView: View {
 private struct LyricsOverlayLineRowView: View {
     let row: LyricsOverlayLine
     let effectiveLyricTime: TimeInterval
+    let lyricClockReferenceDate: Date
+    let isLyricClockRunning: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             TimedLyricTextView(
                 line: row.line,
                 role: row.role,
-                effectiveLyricTime: effectiveLyricTime
+                effectiveLyricTime: effectiveLyricTime,
+                lyricClockReferenceDate: lyricClockReferenceDate,
+                isLyricClockRunning: isLyricClockRunning
             )
 
             if let translationText = row.translationText {
@@ -534,19 +540,36 @@ private struct TimedLyricTextView: View {
     let line: LyricLine
     let role: LyricsOverlayLineRole
     let effectiveLyricTime: TimeInterval
+    let lyricClockReferenceDate: Date
+    let isLyricClockRunning: Bool
 
     var body: some View {
-        Group {
-            if let progress,
-               role == .active {
-                progressText(progress: progress)
-            } else {
-                plainText
+        if role == .active,
+           usesSyllableTiming,
+           isLyricClockRunning {
+            TimelineView(.animation) { context in
+                timedText(at: effectiveLyricTime(at: context.date))
             }
+        } else {
+            timedText(at: effectiveLyricTime)
         }
     }
 
-    private var progress: Double? {
+    @ViewBuilder
+    private func timedText(at effectiveLyricTime: TimeInterval) -> some View {
+        if let progress = progress(at: effectiveLyricTime),
+           role == .active {
+            progressText(progress: progress)
+        } else {
+            plainText
+        }
+    }
+
+    private func effectiveLyricTime(at date: Date) -> TimeInterval {
+        self.effectiveLyricTime + max(0, date.timeIntervalSince(lyricClockReferenceDate))
+    }
+
+    private func progress(at effectiveLyricTime: TimeInterval) -> Double? {
         guard usesSyllableTiming else { return nil }
         return LyricsOverlaySnapshotBuilder.timedLineProgress(
             in: line,

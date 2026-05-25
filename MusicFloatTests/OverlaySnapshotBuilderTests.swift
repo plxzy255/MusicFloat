@@ -31,9 +31,12 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
 
     @MainActor
     func testReadySnapshotUsesActiveLyricAndTranslation() {
+        let referenceDate = Date(timeIntervalSinceReferenceDate: 123)
+        var playerState = MockMusicAppBridge.previewState
+        playerState.updatedAt = referenceDate
         let snapshot = LyricsOverlaySnapshotBuilder().makeSnapshot(
             contentState: .ready,
-            playerState: MockMusicAppBridge.previewState,
+            playerState: playerState,
             lyricsDocument: MockLyricsProvider.previewDocument,
             translation: MockTranslationProvider.previewTranslation(targetLanguageIdentifier: "fr"),
             showsTranslation: true,
@@ -45,6 +48,31 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
         XCTAssertEqual(snapshot.translationText, "La traduction suit, douce et native")
         XCTAssertEqual(snapshot.attributionText, "Mock lyrics - \(languageName("en")) to \(languageName("fr"))")
         XCTAssertEqual(snapshot.widthPreset, .medium)
+        XCTAssertEqual(snapshot.lyricClockReferenceDate, referenceDate)
+        XCTAssertTrue(snapshot.isLyricClockRunning)
+    }
+
+    @MainActor
+    func testPausedSnapshotDoesNotRunLyricClock() {
+        let referenceDate = Date(timeIntervalSinceReferenceDate: 456)
+        let state = PlayerState(
+            playbackStatus: .paused,
+            track: MockMusicAppBridge.previewTrack,
+            elapsedTime: 42,
+            updatedAt: referenceDate
+        )
+
+        let snapshot = LyricsOverlaySnapshotBuilder().makeSnapshot(
+            contentState: .ready,
+            playerState: state,
+            lyricsDocument: MockLyricsProvider.previewDocument,
+            translation: MockTranslationProvider.previewTranslation(targetLanguageIdentifier: "fr"),
+            showsTranslation: true,
+            widthPreset: .medium
+        )
+
+        XCTAssertEqual(snapshot.lyricClockReferenceDate, referenceDate)
+        XCTAssertFalse(snapshot.isLyricClockRunning)
     }
 
     @MainActor

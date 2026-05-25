@@ -18,6 +18,56 @@ final class PlayerControllerTests: XCTestCase {
     }
 
     @MainActor
+    func testLiveTickIntervalIgnoresSyllableBoundaries() {
+        let document = LyricsDocument(
+            source: .appleMusicWeb,
+            lines: [
+                LyricLine(
+                    id: 0,
+                    text: "Dense syllables",
+                    startTime: 0,
+                    syllables: [
+                        LyricSyllable(text: "Dense ", startTime: 0.1, endTime: 0.2),
+                        LyricSyllable(text: "syllables", startTime: 0.2, endTime: 0.3)
+                    ]
+                ),
+                LyricLine(id: 1, text: "Next line", startTime: 8)
+            ],
+            isTimed: true
+        )
+
+        let interval = PlayerController.liveTickInterval(
+            currentElapsed: 0,
+            lyricsDocument: document,
+            lyricOffsetSeconds: 0,
+            duration: 120
+        )
+
+        XCTAssertEqual(interval, 1.0, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testLiveTickIntervalStillWakesForLineBoundary() {
+        let document = LyricsDocument(
+            source: .appleMusicWeb,
+            lines: [
+                LyricLine(id: 0, text: "Current line", startTime: 0),
+                LyricLine(id: 1, text: "Soon", startTime: 0.35)
+            ],
+            isTimed: true
+        )
+
+        let interval = PlayerController.liveTickInterval(
+            currentElapsed: 0,
+            lyricsDocument: document,
+            lyricOffsetSeconds: 0,
+            duration: 120
+        )
+
+        XCTAssertEqual(interval, 0.35, accuracy: 0.0001)
+    }
+
+    @MainActor
     func testPreviewRefreshUsesTrackDurationForUntimedLyrics() {
         let controller = PlayerController(bridge: MockMusicAppBridge())
         let track = NowPlayingTrack(

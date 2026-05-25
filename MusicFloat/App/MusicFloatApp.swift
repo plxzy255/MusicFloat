@@ -36,8 +36,20 @@ private final class MusicFloatAppController {
     private let artworkProvider: AppleMusicArtworkProvider
     private let statusItemController: MenuBarStatusItemController
     private let settingsWindowController: SettingsWindowController
+    private var systemLifecycleObserver: SystemLifecycleObserver?
+    private var suspendedLifecycleState: SuspendedLifecycleState?
     private var liveVisibleLyricsRefreshTask: Task<Void, Never>?
     private static let liveVisibleLyricsRefreshInterval: TimeInterval = 0.5
+
+    private struct SuspendedLifecycleState {
+        let wasOverlayVisible: Bool
+        let wasLiveModeRunning: Bool
+        let wasMockPreviewRunning: Bool
+
+        var shouldResumeLiveOverlay: Bool {
+            wasOverlayVisible && wasLiveModeRunning
+        }
+    }
 
     init() {
         appState = AppState()
@@ -74,6 +86,15 @@ private final class MusicFloatAppController {
             )
         )
 
+        systemLifecycleObserver = SystemLifecycleObserver(
+            onSuspend: { [weak self] event in
+                self?.suspendForSystemLifecycle(event)
+            },
+            onResume: { [weak self] event in
+                self?.resumeAfterSystemLifecycle(event)
+            }
+        )
+
         AppTelemetry.lifecycle.info("MusicFloat app initialized")
 
         applyStartupMode()
@@ -97,6 +118,66 @@ private final class MusicFloatAppController {
         }
 
         AppTelemetry.lifecycle.info("Default startup - menu bar idle")
+    }
+
+    private func suspendForSystemLifecycle(_ event: SystemLifecycleObserver.Event) {
+        guard suspendedLifecycleState == nil else {
+            AppTelemetry.lifecycle.info(
+                "System lifecycle suspend ignored while already suspended reason=\(event.telemetryName, privacy: .public)"
+            )
+            return
+        }
+
+        let snapshot = SuspendedLifecycleState(
+            wasOverlayVisible: appState.isOverlayVisible,
+            wasLiveModeRunning: appState.isLiveModeRunning,
+            wasMockPreviewRunning: appState.isMockPreviewRunning
+        )
+        suspendedLifecycleState = snapshot
+
+        AppTelemetry.lifecycle.notice(
+            "System lifecycle suspend reason=\(event.telemetryName, privacy: .public) overlay=\(snapshot.wasOverlayVisible) live=\(snapshot.wasLiveModeRunning) mock=\(snapshot.wasMockPreviewRunning)"
+        )
+
+        stopLiveVisibleLyricsRefreshLoop()
+        mockProviderPipelineController.stopHiddenWork(appState: appState)
+        if appState.reduceHiddenMemoryUsage {
+            liveProviderPipelineControllerStore.release(appState: appState)
+        } else {
+            liveProviderPipelineControllerStore.current?.stopHiddenWork(appState: appState)
+        }
+        playerController.stopMockPreview(appState: appState)
+        playerController.stopLiveAppleMusic(appState: appState)
+        artworkProvider.cancel(appState: appState) { [weak self] in
+            self?.statusItemController.refreshStatusIcon()
+        }
+        appState.runtimeFeatureFlags = .architectureDefault
+
+        if appState.isOverlayVisible {
+            appState.isOverlayVisible = false
+        }
+        panelController.hide(releaseResources: appState.reduceHiddenMemoryUsage)
+        statusItemController.refreshStatusIcon()
+    }
+
+    private func resumeAfterSystemLifecycle(_ event: SystemLifecycleObserver.Event) {
+        guard let snapshot = suspendedLifecycleState else {
+            AppTelemetry.lifecycle.info(
+                "System lifecycle resume ignored without suspension reason=\(event.telemetryName, privacy: .public)"
+            )
+            return
+        }
+        suspendedLifecycleState = nil
+
+        AppTelemetry.lifecycle.notice(
+            "System lifecycle resume reason=\(event.telemetryName, privacy: .public) resumeLiveOverlay=\(snapshot.shouldResumeLiveOverlay)"
+        )
+
+        if snapshot.shouldResumeLiveOverlay {
+            startLiveAppleMusic()
+        } else {
+            statusItemController.refreshStatusIcon()
+        }
     }
 
     private func openSettingsWindow() {
