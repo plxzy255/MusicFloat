@@ -76,6 +76,23 @@ final class ProviderPipelineControllerTests: XCTestCase {
         XCTAssertTrue(ProviderPipelineController.skipsIntegratedVisibleLyricsRefresh(for: document))
     }
 
+    func testIntegratedVisibleLyricsMissesBackOffAXRefreshCadence() {
+        XCTAssertEqual(
+            ProviderPipelineController.integratedVisibleLyricsMinimumInterval(
+                base: 0.5,
+                consecutiveMisses: 2
+            ),
+            0.5
+        )
+        XCTAssertEqual(
+            ProviderPipelineController.integratedVisibleLyricsMinimumInterval(
+                base: 0.5,
+                consecutiveMisses: 3
+            ),
+            1.25
+        )
+    }
+
     func testProviderPipelineAppliesLyricsReadyBeforeTranslationCompletes() async throws {
         let defaults = UserDefaults(suiteName: "MusicFloatTests.lyricsBeforeTranslation.\(UUID().uuidString)")!
         let appState = AppState(userDefaults: defaults)

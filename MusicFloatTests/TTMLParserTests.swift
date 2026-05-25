@@ -66,6 +66,75 @@ final class TTMLParserTests: XCTestCase {
     }
 
     @MainActor
+    func testWordTimedArabicSpansInferReadableSpaces() {
+        let ttml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <tt xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Word" xml:lang="ar">
+          <body>
+            <div>
+              <p begin="00:01.000" end="00:03.000">
+                <span begin="00:01.000" end="00:01.500">يا</span><span begin="00:01.500" end="00:02.000">حبيبي</span>
+              </p>
+            </div>
+          </body>
+        </tt>
+        """
+
+        let document = TTMLParser.parse(ttml: ttml)
+
+        XCTAssertEqual(document?.lines.first?.text, "يا حبيبي")
+        XCTAssertEqual(document?.lines.first?.syllables.map(\.text), ["يا ", "حبيبي"])
+    }
+
+    @MainActor
+    func testWordTimedRussianSpansInferReadableSpaces() {
+        let ttml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <tt xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Word" xml:lang="ru">
+          <body>
+            <div>
+              <p begin="00:01.000" end="00:04.000">
+                <span begin="00:01.000" end="00:01.500">Я</span><span begin="00:01.500" end="00:02.100">люблю</span><span begin="00:02.100" end="00:02.700">тебя</span>
+              </p>
+            </div>
+          </body>
+        </tt>
+        """
+
+        let document = TTMLParser.parse(ttml: ttml)
+
+        XCTAssertEqual(document?.lines.first?.text, "Я люблю тебя")
+        XCTAssertEqual(document?.lines.first?.syllables.map(\.text), ["Я ", "люблю ", "тебя"])
+    }
+
+    @MainActor
+    func testWordTimedUnicodePunctuationDoesNotInsertSpaceBeforePunctuation() {
+        let ttml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <tt xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Word" xml:lang="ru">
+          <body>
+            <div>
+              <p begin="00:01.000" end="00:04.000">
+                <span begin="00:01.000" end="00:01.500">Привет</span><span begin="00:01.500" end="00:01.600">,</span><span begin="00:01.600" end="00:02.200">мир</span><span begin="00:02.200" end="00:02.300">!</span><span begin="00:02.300" end="00:02.900">(да)</span>
+              </p>
+            </div>
+          </body>
+        </tt>
+        """
+
+        let document = TTMLParser.parse(ttml: ttml)
+
+        XCTAssertEqual(document?.lines.first?.text, "Привет, мир! (да)")
+        XCTAssertEqual(document?.lines.first?.syllables.map(\.text), [
+            "Привет",
+            ", ",
+            "мир",
+            "! ",
+            "(да)"
+        ])
+    }
+
+    @MainActor
     func testNonWordTimedSpansDoNotInventSpacesBetweenSyllableFragments() {
         let ttml = """
         <?xml version="1.0" encoding="UTF-8"?>

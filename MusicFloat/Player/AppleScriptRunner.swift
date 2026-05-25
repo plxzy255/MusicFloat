@@ -1,5 +1,5 @@
 import Foundation
-import OSAKit
+@preconcurrency @unsafe import OSAKit
 import OSLog
 
 /// Minimal AppleScript wrapper for the small queries we issue against Music.app.
@@ -11,34 +11,22 @@ enum AppleScriptRunner {
     /// Runs `source` and returns the string description of its result.
     /// Returns `nil` on compile or execution error.
     nonisolated static func runString(_ source: String) -> String? {
-        runStringImpl(source)
+        runDescriptorImpl(source)?.stringValue
     }
 
     nonisolated static func runStringOffMain(_ source: String) async -> String? {
-        await Task.detached(priority: .userInitiated) {
-            runStringImpl(source)
-        }.value
+        await AppleScriptExecutor.shared.runString(source)
     }
 
     /// Runs `source` off the main actor and returns raw Apple event descriptor bytes.
     nonisolated static func runDataOffMain(_ source: String) async -> Data? {
-        await Task.detached(priority: .userInitiated) {
-            runDescriptorDataImpl(source)
-        }.value
-    }
-
-    nonisolated private static func runStringImpl(_ source: String) -> String? {
-        runDescriptorImpl(source)?.stringValue
-    }
-
-    nonisolated private static func runDescriptorDataImpl(_ source: String) -> Data? {
-        runDescriptorImpl(source)?.rawDescriptorData
+        await AppleScriptExecutor.shared.runData(source)
     }
 
     nonisolated private static func runDescriptorImpl(_ source: String) -> NSAppleEventDescriptor? {
         let script = OSAScript(source: source, language: OSALanguage(forName: "AppleScript"))
         var errorInfo: NSDictionary?
-        guard let descriptor = script.executeAndReturnError(&errorInfo) else {
+        guard let descriptor = unsafe script.executeAndReturnError(&errorInfo) else {
             if let errorInfo {
                 let message = String(describing: errorInfo[OSAScriptErrorMessageKey])
                 Task { @MainActor in
@@ -48,6 +36,79 @@ enum AppleScriptRunner {
             return nil
         }
         return descriptor
+    }
+}
+
+private actor AppleScriptExecutor {
+    static let shared = AppleScriptExecutor()
+
+    private let maxCachedScripts = 24
+    private var scripts: [String: OSAScript] = [:]
+    private var scriptAccessOrder: [String] = []
+    private let language = OSALanguage(forName: "AppleScript")
+
+    func runString(_ source: String) -> String? {
+        runDescriptor(source)?.stringValue
+    }
+
+    func runData(_ source: String) -> Data? {
+        runDescriptor(source)?.rawDescriptorData
+    }
+
+    private func runDescriptor(_ source: String) -> NSAppleEventDescriptor? {
+        guard let script = compiledScript(for: source) else {
+            return nil
+        }
+
+        var errorInfo: NSDictionary?
+        guard let descriptor = unsafe script.executeAndReturnError(&errorInfo) else {
+            if let errorInfo {
+                logScriptError(errorInfo)
+            }
+            return nil
+        }
+        return descriptor
+    }
+
+    private func compiledScript(for source: String) -> OSAScript? {
+        if let script = scripts[source] {
+            recordScriptAccess(source)
+            return script
+        }
+
+        let script = OSAScript(source: source, language: language)
+        var errorInfo: NSDictionary?
+        guard unsafe script.compileAndReturnError(&errorInfo) else {
+            if let errorInfo {
+                logScriptError(errorInfo)
+            }
+            return nil
+        }
+
+        scripts[source] = script
+        scriptAccessOrder.append(source)
+        evictOldScriptsIfNeeded()
+        return script
+    }
+
+    private func recordScriptAccess(_ source: String) {
+        scriptAccessOrder.removeAll { $0 == source }
+        scriptAccessOrder.append(source)
+    }
+
+    private func evictOldScriptsIfNeeded() {
+        while scripts.count > maxCachedScripts,
+              let evictedSource = scriptAccessOrder.first {
+            scriptAccessOrder.removeFirst()
+            scripts.removeValue(forKey: evictedSource)
+        }
+    }
+
+    private func logScriptError(_ errorInfo: NSDictionary) {
+        let message = String(describing: errorInfo[OSAScriptErrorMessageKey])
+        Task { @MainActor in
+            AppTelemetry.performance.error("AppleScript error: \(message, privacy: .public)")
+        }
     }
 }
 
