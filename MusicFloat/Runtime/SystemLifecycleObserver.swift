@@ -30,6 +30,7 @@ final class SystemLifecycleObserver {
 
     private let notificationCenter: NotificationCenter
     private var tokens: [any NSObjectProtocol] = []
+    private var isObserving = true
 
     init(
         notificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter,
@@ -45,12 +46,14 @@ final class SystemLifecycleObserver {
     }
 
     deinit {
+        isObserving = false
         for token in tokens {
             notificationCenter.removeObserver(token)
         }
     }
 
     func stop() {
+        isObserving = false
         for token in tokens {
             notificationCenter.removeObserver(token)
         }
@@ -66,8 +69,9 @@ final class SystemLifecycleObserver {
             forName: name,
             object: nil,
             queue: .main
-        ) { _ in
-            Task { @MainActor in
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.isObserving else { return }
                 handler(event)
             }
         }
