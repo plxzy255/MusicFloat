@@ -11,7 +11,7 @@ enum AppleScriptRunner {
     /// Runs `source` and returns the string description of its result.
     /// Returns `nil` on compile or execution error.
     nonisolated static func runString(_ source: String) -> String? {
-        runDescriptorImpl(source)?.stringValue
+        AppleScriptExecutor.shared.runStringSync(source)
     }
 
     nonisolated static func runStringOffMain(_ source: String) async -> String? {
@@ -23,36 +23,60 @@ enum AppleScriptRunner {
         await AppleScriptExecutor.shared.runData(source)
     }
 
-    nonisolated private static func runDescriptorImpl(_ source: String) -> NSAppleEventDescriptor? {
-        let script = OSAScript(source: source, language: OSALanguage(forName: "AppleScript"))
-        var errorInfo: NSDictionary?
-        guard let descriptor = unsafe script.executeAndReturnError(&errorInfo) else {
-            if let errorInfo {
-                let message = appleScriptErrorMessage(errorInfo)
-                Task { @MainActor in
-                    AppTelemetry.performance.error("AppleScript error: \(message, privacy: .public)")
-                }
-            }
-            return nil
-        }
-        return descriptor
-    }
 }
 
-private actor AppleScriptExecutor {
+/// OSAKit is thread-affine and can throw Objective-C exceptions when its
+/// language/component state is compiled from Swift's cooperative worker pool.
+/// Keep all OSAScript and OSALanguage objects on one long-lived thread.
+nonisolated private final class AppleScriptExecutor: @unchecked Sendable {
     static let shared = AppleScriptExecutor()
 
     private let maxCachedScripts = 24
     private var scripts: [String: OSAScript] = [:]
     private var scriptAccessOrder: [String] = []
-    private let language = OSALanguage(forName: "AppleScript")
+    private var language: OSALanguage?
+    private let condition = NSCondition()
+    private var jobs: [@Sendable () -> Void] = []
+    private var workerThread: Thread?
 
-    func runString(_ source: String) -> String? {
-        runDescriptor(source)?.stringValue
+    private init() {
+        let thread = Thread { [weak self] in
+            self?.runWorker()
+        }
+        thread.name = "MusicFloat AppleScript"
+        workerThread = thread
+        thread.start()
     }
 
-    func runData(_ source: String) -> Data? {
-        runDescriptor(source)?.rawDescriptorData
+    nonisolated func runString(_ source: String) async -> String? {
+        await withCheckedContinuation { continuation in
+            enqueue { [self] in
+                continuation.resume(returning: runDescriptor(source)?.stringValue)
+            }
+        }
+    }
+
+    nonisolated func runData(_ source: String) async -> Data? {
+        await withCheckedContinuation { continuation in
+            enqueue { [self] in
+                continuation.resume(returning: runDescriptor(source)?.rawDescriptorData)
+            }
+        }
+    }
+
+    nonisolated func runStringSync(_ source: String) -> String? {
+        if Thread.current === workerThread {
+            return runDescriptor(source)?.stringValue
+        }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        let result = AppleScriptResultBox<String>()
+        enqueue { [self] in
+            result.value = runDescriptor(source)?.stringValue
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return result.value
     }
 
     private func runDescriptor(_ source: String) -> NSAppleEventDescriptor? {
@@ -74,6 +98,10 @@ private actor AppleScriptExecutor {
         if let script = scripts[source] {
             recordScriptAccess(source)
             return script
+        }
+
+        if language == nil {
+            language = OSALanguage(forName: "AppleScript")
         }
 
         let script = OSAScript(source: source, language: language)
@@ -110,6 +138,29 @@ private actor AppleScriptExecutor {
             AppTelemetry.performance.error("AppleScript error: \(message, privacy: .public)")
         }
     }
+
+    private nonisolated func enqueue(_ job: @escaping @Sendable () -> Void) {
+        condition.lock()
+        jobs.append(job)
+        condition.signal()
+        condition.unlock()
+    }
+
+    private func runWorker() {
+        while true {
+            condition.lock()
+            while jobs.isEmpty {
+                condition.wait()
+            }
+            let job = jobs.removeFirst()
+            condition.unlock()
+            job()
+        }
+    }
+}
+
+nonisolated private final class AppleScriptResultBox<Value>: @unchecked Sendable {
+    var value: Value?
 }
 
 private nonisolated func appleScriptErrorMessage(_ errorInfo: NSDictionary) -> String {

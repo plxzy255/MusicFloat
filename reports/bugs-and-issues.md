@@ -43,6 +43,28 @@ the status as fixes land or evidence changes.
 
 ## Resolved
 
+### 2026-05-25 AppleScript compile crash on scrub
+
+- Status: resolved
+- Area: Music.app playback commands / AppleScript execution.
+- Symptom: scrubbing could abort with `EXC_CRASH / SIGABRT` while compiling a
+  cache-miss `set player position` AppleScript. The top frames were
+  `OSALanguageInstance componentInstance`, `OSAScript compileAndReturnError`,
+  `AppleScriptExecutor.compiledScript(for:)`, and
+  `PublicAppleMusicAppBridge.perform(_:)`.
+- Root cause: the actor-backed AppleScript cache serialized calls but did not
+  pin OSAKit to a stable thread. Swift actor executors can hop between worker
+  threads, while OSAKit language/component state is thread-affine and can throw
+  uncaught Objective-C exceptions during compile.
+- Fix: `AppleScriptExecutor` now owns a single long-lived `MusicFloat
+  AppleScript` worker thread. All `OSALanguage`, `OSAScript`, compile, execute,
+  and script-cache access happens on that thread; async callers remain off the
+  main actor.
+- Verification:
+  - Full `xcodebuild test -project MusicFloat.xcodeproj -scheme MusicFloat
+    -destination platform=macOS -derivedDataPath .codex/DerivedData` passed.
+  - `./script/build_and_run.sh --verify` passed.
+
 ### 2026-05-25 opt-in disk cache and clear-cache UX batch
 
 - Status: resolved
