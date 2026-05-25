@@ -224,6 +224,24 @@ final class AppStateArtworkTests: XCTestCase {
     }
 
     @MainActor
+    func testArtworkDownsamplingPreservesAlreadySmallSourceData() async throws {
+        let sourceData = try makeJPEGImageData(width: 128, height: 128)
+        let sourcePixelSize = try imagePixelSize(from: sourceData)
+
+        let maybeThumbnailData = await ArtworkImageProcessor.downsampledImageData(
+            from: sourceData,
+            maxPixelSize: 256
+        )
+        let thumbnailData = try XCTUnwrap(maybeThumbnailData)
+        let pixelSize = try imagePixelSize(from: thumbnailData)
+
+        XCTAssertLessThanOrEqual(max(sourcePixelSize.width, sourcePixelSize.height), 256)
+        XCTAssertEqual(thumbnailData, sourceData)
+        XCTAssertEqual(pixelSize.width, sourcePixelSize.width)
+        XCTAssertEqual(pixelSize.height, sourcePixelSize.height)
+    }
+
+    @MainActor
     func testArtworkProviderCachesThumbnailDataForSameTrack() async throws {
         let defaults = UserDefaults(suiteName: "MusicFloatTests.artworkProviderCache.\(UUID().uuidString)")!
         let appState = AppState(userDefaults: defaults)
@@ -305,6 +323,17 @@ final class AppStateArtworkTests: XCTestCase {
         image.unlockFocus()
 
         guard let data = image.tiffRepresentation else {
+            throw TestImageError.makeImageFailed
+        }
+
+        return data
+    }
+
+    @MainActor
+    private func makeJPEGImageData(width: Int, height: Int) throws -> Data {
+        let tiffData = try makeImageData(width: width, height: height)
+        guard let bitmap = NSBitmapImageRep(data: tiffData),
+              let data = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.7]) else {
             throw TestImageError.makeImageFailed
         }
 

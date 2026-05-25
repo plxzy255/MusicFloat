@@ -152,10 +152,15 @@ enum ArtworkImageProcessor {
                 return nil
             }
 
+            let normalizedMaxPixelSize = max(1, maxPixelSize)
             let targetPixelSize = scaledPixelSize(
                 source: sourcePixelSize,
-                maxPixelSize: max(1, maxPixelSize)
+                maxPixelSize: normalizedMaxPixelSize
             )
+            if max(sourcePixelSize.width, sourcePixelSize.height) <= CGFloat(normalizedMaxPixelSize) {
+                return data
+            }
+
             guard let bitmap = unsafe NSBitmapImageRep(
                 bitmapDataPlanes: nil,
                 pixelsWide: Int(targetPixelSize.width.rounded(.toNearestOrAwayFromZero)),
