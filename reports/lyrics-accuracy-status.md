@@ -40,6 +40,11 @@ The live-refresh tick in `ProviderPipelineController` recognizes the source of t
   The event bridge now retries briefly, ignores snapshots whose track identity
   disagrees with the notification, and accepts the notification track rather
   than leaving lyrics, translation, and artwork attached to the old track.
+- **Catalog URL shortcut validates track identity**: the Apple Music web
+  resolver no longer trusts `URL of current track` unless AppleScript's
+  persistent ID matches the notification track ID. When Music.app lags on the
+  previous track, the resolver falls through to catalog search for the accepted
+  notification track instead of querying the old catalog row.
 - **Plain Apple Music web docs stay sentence-first**: Apple Music web documents
   now skip AX replacement whether they are timed or plain. Timed TTML keeps the
   Apple clock; line-only/plain web lyrics keep equal estimated sentence windows
@@ -54,9 +59,9 @@ The live-refresh tick in `ProviderPipelineController` recognizes the source of t
 
 - **Seek / scrub long-run coverage**: the latest driven run proved the watchdog can detect seek jumps and resync the live clock, but it covered one session and line-timed Apple Music web lyrics. Keep this as a monitoring item for scrub-heavy manual use, syllable-heavy TTML, and tracks where Music's own highlight jumps differently from the web TTML timing.
 - **Lagged snapshot fix needs live confirmation**: the 2026-05-27 bridge fix
-  is covered by unit tests and build validation, but it has not yet been run
-  through `--live --drive-music` or verified against a manual skip in the user's
-  active app session.
+  and catalog-ID guard are covered by unit tests and build validation, but they
+  have not yet been run through `--live --drive-music` or verified against a
+  manual skip in the user's active app session.
 - **Catalog ID resolution misses**: some tracks can still log `AM web: could not resolve catalog ID for track` and fall back to LRCLIB / AX. The resolver now scores `hasLyrics`, `hasTimeSyncedLyrics`, and `audioLocale`, and the web provider suppresses short-term repeated misses per track. Remaining root causes likely include:
   - AppleScript `URL of current track` is empty for some catalog playback paths (cloud library matches, Apple Music radio, queued recommendations).
   - The catalog-search fallback still only requests `types=songs`; matching may remain too strict for renamed/translated/explicit-tagged variants.

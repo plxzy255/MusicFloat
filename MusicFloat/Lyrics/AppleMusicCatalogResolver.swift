@@ -33,7 +33,12 @@ enum AppleMusicCatalogResolver {
             try
                 set u to (get URL of current track)
                 if u is missing value then return ""
-                return u as string
+                try
+                    set tID to (persistent ID of current track as string)
+                on error
+                    set tID to ""
+                end try
+                return (u as string) & "||" & tID
             on error
                 return ""
             end try
@@ -52,7 +57,10 @@ enum AppleMusicCatalogResolver {
         lookupID: String? = nil
     ) async -> Resolution {
         let effectiveLookupID = lookupID ?? Self.makeLookupID()
-        if let local = await resolveFromAppleScript(lookupID: effectiveLookupID) {
+        if let local = await resolveFromAppleScript(
+            expectedTrackID: track.id,
+            lookupID: effectiveLookupID
+        ) {
             return .identity(local)
         }
         let storefront = cachedStorefront ?? "us"
@@ -68,11 +76,39 @@ enum AppleMusicCatalogResolver {
 
     // MARK: - AppleScript URL parsing
 
-    private static func resolveFromAppleScript(lookupID: String) async -> Identity? {
+    private static func resolveFromAppleScript(
+        expectedTrackID: String,
+        lookupID: String
+    ) async -> Identity? {
         guard let raw = await AppleScriptRunner.runStringOffMain(urlScript)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty,
-              let url = URL(string: raw),
+              !raw.isEmpty else {
+            return nil
+        }
+        return identityFromAppleScript(raw: raw, expectedTrackID: expectedTrackID, lookupID: lookupID)
+    }
+
+    static func identityFromAppleScript(
+        raw: String,
+        expectedTrackID: String,
+        lookupID: String
+    ) -> Identity? {
+        let scriptParts = raw.components(separatedBy: "||")
+        let rawURL = scriptParts.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let rawPersistentID = scriptParts.count > 1
+            ? scriptParts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            : ""
+
+        if let scriptTrackID = canonicalPersistentID(rawPersistentID),
+           let expectedID = canonicalPersistentID(expectedTrackID),
+           scriptTrackID != expectedID {
+            AppTelemetry.performance.info(
+                "AM resolve via AppleScript lookup=\(lookupID, privacy: .public) result=ignored_mismatched_track scriptTrack=\(NowPlayingTrack.telemetryID(for: scriptTrackID), privacy: .public) expectedTrack=\(NowPlayingTrack.telemetryID(for: expectedID), privacy: .public)"
+            )
+            return nil
+        }
+
+        guard let url = URL(string: rawURL),
               url.host?.contains("music.apple.com") == true else {
             return nil
         }
@@ -92,6 +128,10 @@ enum AppleMusicCatalogResolver {
             return Identity(storefront: storefront, songID: parts[3])
         }
         return nil
+    }
+
+    private static func canonicalPersistentID(_ raw: String) -> String? {
+        AppleMusicEventListener.canonicalPersistentID(raw)
     }
 
     // MARK: - Catalog search fallback
