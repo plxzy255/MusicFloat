@@ -33,6 +33,7 @@ final class PlayerController {
     private var refreshTask: Task<Void, Never>?
     private var liveTask: Task<Void, Never>?
     private var liveTickTask: Task<Void, Never>?
+    private var liveVisibilityRefreshTask: Task<Void, Never>?
     private var liveBridge: (any MusicAppBridge)?
     private var liveTrackChangedCallback: (@MainActor (NowPlayingTrack?) -> Void)?
     private let syncEngine = LyricsSyncEngine()
@@ -122,6 +123,8 @@ final class PlayerController {
         liveTask = nil
         liveTickTask?.cancel()
         liveTickTask = nil
+        liveVisibilityRefreshTask?.cancel()
+        liveVisibilityRefreshTask = nil
         liveBridge = nil
         liveTrackChangedCallback = nil
         appState?.setMusicVolume(nil)
@@ -261,10 +264,39 @@ final class PlayerController {
     func overlayVisibilityChanged(_ isVisible: Bool, appState: AppState) {
         guard liveTask != nil else { return }
         if isVisible {
+            appState.resumeLiveElapsedTimeFromWallClock()
             restartLiveTick(appState: appState)
+            refreshLiveStateForVisibleOverlay(appState: appState)
         } else {
+            liveVisibilityRefreshTask?.cancel()
+            liveVisibilityRefreshTask = nil
             liveTickTask?.cancel()
             liveTickTask = nil
+        }
+    }
+
+    private func refreshLiveStateForVisibleOverlay(appState: AppState) {
+        guard let bridge = liveBridge else { return }
+        liveVisibilityRefreshTask?.cancel()
+
+        liveVisibilityRefreshTask = Task { @MainActor [weak self, weak appState, bridge] in
+            guard let self, let appState else { return }
+            let previousTrackID = appState.playerState.track?.id
+            let snapshot = await bridge.currentState()
+            guard !Task.isCancelled,
+                  appState.isOverlayVisible,
+                  appState.isLiveModeRunning else {
+                return
+            }
+
+            appState.updatePlayerState(snapshot)
+            if snapshot.track?.id != previousTrackID {
+                self.liveTrackChangedCallback?(snapshot.track)
+            }
+            self.restartLiveTick(appState: appState)
+            AppTelemetry.performance.info(
+                "Live overlay resume snapshot refreshed hasTrack=\(snapshot.track != nil) elapsed=\(snapshot.elapsedTime)"
+            )
         }
     }
 

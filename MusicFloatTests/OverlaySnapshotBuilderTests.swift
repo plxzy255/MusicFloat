@@ -30,6 +30,20 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
     }
 
     @MainActor
+    func testHiddenOverlaySnapshotDoesNotRunLyricClock() {
+        let defaults = UserDefaults(suiteName: "MusicFloatTests.hiddenOverlayClock.\(UUID().uuidString)")!
+        let appState = AppState(userDefaults: defaults)
+        appState.isOverlayVisible = true
+        appState.updatePlayerState(MockMusicAppBridge.previewState)
+
+        XCTAssertTrue(appState.overlaySnapshot.isLyricClockRunning)
+
+        appState.isOverlayVisible = false
+
+        XCTAssertFalse(appState.overlaySnapshot.isLyricClockRunning)
+    }
+
+    @MainActor
     func testReadySnapshotUsesActiveLyricAndTranslation() {
         let referenceDate = Date(timeIntervalSinceReferenceDate: 123)
         var playerState = MockMusicAppBridge.previewState

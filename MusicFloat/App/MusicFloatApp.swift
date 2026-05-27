@@ -28,6 +28,7 @@ private final class MusicFloatAppController {
 
     private let launchesInDemoMode = CommandLine.arguments.contains("--demo")
     private let launchesInLiveMode = CommandLine.arguments.contains("--live")
+    private let autoHideOverlayDelay: TimeInterval?
     private let mediaCache: any UserControllableMediaCache
     private let liveProviderPipelineControllerStore: LiveProviderPipelineControllerStore
     private let panelController: FloatingPanelController
@@ -52,6 +53,7 @@ private final class MusicFloatAppController {
     }
 
     init() {
+        autoHideOverlayDelay = Self.autoHideOverlayDelay(from: CommandLine.arguments)
         appState = AppState()
         mediaCache = DiskBackedMediaCache(
             diskPersistenceEnabled: UserDefaults.standard.object(forKey: "diskMediaCacheEnabled") as? Bool ?? false
@@ -98,6 +100,7 @@ private final class MusicFloatAppController {
         AppTelemetry.lifecycle.info("MusicFloat app initialized")
 
         applyStartupMode()
+        scheduleAutoHideOverlayIfNeeded()
     }
 
     private func applyStartupMode() {
@@ -118,6 +121,14 @@ private final class MusicFloatAppController {
         }
 
         AppTelemetry.lifecycle.info("Default startup - menu bar idle")
+    }
+
+    private func scheduleAutoHideOverlayIfNeeded() {
+        guard let autoHideOverlayDelay else { return }
+        AppTelemetry.lifecycle.info("Auto-hide overlay scheduled delay=\(autoHideOverlayDelay, privacy: .public)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(Int(autoHideOverlayDelay * 1000))) { [weak self] in
+            self?.hideOverlayIfVisible(reason: "autoHide")
+        }
     }
 
     private func suspendForSystemLifecycle(_ event: SystemLifecycleObserver.Event) {
@@ -211,29 +222,47 @@ private final class MusicFloatAppController {
     }
 
     private func toggleOverlay() {
-        appState.isOverlayVisible.toggle()
-        AppTelemetry.menuBar.info("Toggle overlay requested visible=\(self.appState.isOverlayVisible)")
+        let isShowing = !appState.isOverlayVisible
+        AppTelemetry.menuBar.info("Toggle overlay requested visible=\(isShowing)")
 
-        if appState.isOverlayVisible {
-            if !appState.isLiveModeRunning {
+        if isShowing {
+            appState.isOverlayVisible = true
+            if appState.isLiveModeRunning {
+                let liveProviderPipelineController = getLiveProviderPipelineController()
+                panelController.show(
+                    appState: appState,
+                    onTranslationPreparationCompleted: { [weak self] in self?.retryTranslationAfterPreparation() },
+                    playbackCommands: overlayPlaybackCommands
+                )
+                playerController.overlayVisibilityChanged(true, appState: appState)
+                liveProviderPipelineController.resumeVisibleLiveOverlayContent(appState: appState)
+                startLiveVisibleLyricsRefreshLoopIfNeeded(liveProviderPipelineController)
+            } else {
                 playerController.startMockPreview(appState: appState)
+                activeProviderPipelineController.prepareOverlayContent(appState: appState)
+                panelController.show(
+                    appState: appState,
+                    onTranslationPreparationCompleted: { [weak self] in self?.retryTranslationAfterPreparation() },
+                    playbackCommands: overlayPlaybackCommands
+                )
+                playerController.overlayVisibilityChanged(true, appState: appState)
+                startLiveVisibleLyricsRefreshLoopIfNeeded()
             }
-            activeProviderPipelineController.prepareOverlayContent(appState: appState)
-            panelController.show(
-                appState: appState,
-                onTranslationPreparationCompleted: { [weak self] in self?.retryTranslationAfterPreparation() },
-                playbackCommands: overlayPlaybackCommands
-            )
-            playerController.overlayVisibilityChanged(true, appState: appState)
-            startLiveVisibleLyricsRefreshLoopIfNeeded()
         } else {
-            stopLiveVisibleLyricsRefreshLoop()
-            mockProviderPipelineController.stopHiddenWork(appState: appState)
-            liveProviderPipelineControllerStore.current?.stopHiddenWork(appState: appState)
-            playerController.stopMockPreview(appState: appState)
-            playerController.overlayVisibilityChanged(false, appState: appState)
-            panelController.hide(releaseResources: appState.reduceHiddenMemoryUsage)
+            hideOverlayIfVisible(reason: "menu")
         }
+    }
+
+    private func hideOverlayIfVisible(reason: String) {
+        guard appState.isOverlayVisible else { return }
+        appState.isOverlayVisible = false
+        AppTelemetry.windowing.info("Hide overlay requested reason=\(reason, privacy: .public)")
+        stopLiveVisibleLyricsRefreshLoop()
+        mockProviderPipelineController.stopHiddenWork(appState: appState)
+        liveProviderPipelineControllerStore.current?.stopHiddenWork(appState: appState)
+        playerController.stopMockPreview(appState: appState)
+        playerController.overlayVisibilityChanged(false, appState: appState)
+        panelController.hide(releaseResources: appState.reduceHiddenMemoryUsage)
     }
 
     private func toggleMockPreview() {
@@ -429,6 +458,39 @@ private final class MusicFloatAppController {
 
     private static func nanoseconds(for interval: TimeInterval) -> UInt64 {
         UInt64(max(0.1, interval) * 1_000_000_000)
+    }
+
+    private static func autoHideOverlayDelay(from arguments: [String]) -> TimeInterval? {
+        for index in arguments.indices {
+            let argument = arguments[index]
+            if argument == "--hide-after" {
+                let valueIndex = arguments.index(after: index)
+                guard arguments.indices.contains(valueIndex) else { return nil }
+                return duration(from: arguments[valueIndex])
+            }
+            if argument.hasPrefix("--hide-after=") {
+                return duration(from: String(argument.dropFirst("--hide-after=".count)))
+            }
+        }
+        return nil
+    }
+
+    private static func duration(from rawValue: String) -> TimeInterval? {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let suffixes: [(String, Double)] = [
+            ("ms", 0.001),
+            ("s", 1),
+            ("m", 60)
+        ]
+        for (suffix, multiplier) in suffixes where trimmed.hasSuffix(suffix) {
+            let number = trimmed.dropLast(suffix.count)
+            guard let value = TimeInterval(String(number)), value > 0 else { return nil }
+            return value * multiplier
+        }
+        guard let value = TimeInterval(trimmed), value > 0 else { return nil }
+        return value
     }
 }
 

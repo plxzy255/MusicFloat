@@ -88,9 +88,16 @@ Collect direct CPU/RSS samples without Instruments:
 
 ```sh
 ./script/profile.sh sample 30s --demo
+./script/profile.sh sample 60s --demo --hide-after 10s --scenario overlay-show-hide-idle
 ./script/profile.sh sample 30s --live
 ./script/profile.sh sample 30s --live --drive-music --scenario apple-music-driven-karaoke
 ```
+
+Use `--hide-after <duration>` when the question is hidden-overlay idle cost.
+For the standard demo path, use `--scenario overlay-show-hide-idle` so the
+ledger can be compared only against other show->hide->idle runs. The flag
+launches the overlay normally, hides it after the requested delay, and keeps
+sampling until the outer sample duration completes.
 
 Measure the explicit Apple Translation/NaturalLanguage lane separately from
 the default Release baseline:
@@ -108,6 +115,7 @@ current state needs profiling evidence:
 
 ```sh
 script/profile_snapshot.sh -- ./script/profile.sh sample 30s --demo --scenario overlay-karaoke
+script/profile_snapshot.sh -- ./script/profile.sh sample 60s --demo --hide-after 10s --scenario overlay-show-hide-idle
 script/profile_snapshot.sh --run -- ./script/profile.sh sample 30s --demo --apple-translation --scenario translation-enabled-overlay
 script/profile_snapshot.sh --ref main -- ./script/profile.sh sample 30s --demo --scenario overlay-karaoke
 ```

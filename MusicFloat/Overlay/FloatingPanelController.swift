@@ -67,9 +67,16 @@ final class FloatingPanelController: NSObject {
     }
 
     func updateLayout(appState: AppState) {
-        guard let panel else { return }
-        AppTelemetry.measure("FloatingPanelUpdateLayout") {
-            self.applySize(appState: appState, to: panel)
+        guard panel != nil else { return }
+        // Defer to the next runloop tick: callers may invoke this from inside a
+        // SwiftUI layout pass (e.g. .onChange of panelHeight), and resizing the
+        // panel with display:true synchronously runs -layoutSubtreeIfNeeded,
+        // which AppKit rejects when the view is already being laid out.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let panel = self.panel else { return }
+            AppTelemetry.measure("FloatingPanelUpdateLayout") {
+                self.applySize(appState: appState, to: panel)
+            }
         }
     }
 
@@ -213,12 +220,17 @@ final class FloatingPanelController: NSObject {
     }
 
     @objc private func screenParametersChanged(_ notification: Notification) {
-        guard let panel else { return }
-        let frame = clamped(panel.frame)
-        panel.setFrame(frame, display: true)
-        panel.contentView?.frame = NSRect(origin: .zero, size: frame.size)
-        persistFrameOrigin(frame)
-        AppTelemetry.windowing.info("Floating panel clamped after screen change")
+        // Same recursion guard as updateLayout: notifications can deliver while
+        // AppKit is mid-layout (space switches, display reconfigure), and
+        // setFrame(display: true) would synchronously call layoutSubtreeIfNeeded.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let panel = self.panel else { return }
+            let frame = self.clamped(panel.frame)
+            panel.setFrame(frame, display: true)
+            panel.contentView?.frame = NSRect(origin: .zero, size: frame.size)
+            self.persistFrameOrigin(frame)
+            AppTelemetry.windowing.info("Floating panel clamped after screen change")
+        }
     }
 }
 

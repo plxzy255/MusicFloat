@@ -55,7 +55,7 @@ updating tracked reports or clearly label the evidence as local-only.
    - baseline branch/tag/commit/run ID,
    - candidate branch/tag/commit/run ID,
    - mode: `demo`, `live`, or `default`,
-   - scenario name, for example `overlay-karaoke`,
+   - scenario name, for example `overlay-karaoke` or `overlay-show-hide-idle`,
    - metric under investigation: memory, CPU, startup, SwiftUI, leaks,
      concurrency, wakeups, animation, or compile/runtime warnings.
 
@@ -126,6 +126,13 @@ Cheap resource comparison:
 ./script/profile.sh compare-runs <baseline-run-id> <candidate-run-id>
 ```
 
+Hidden-overlay idle comparison:
+
+```sh
+./script/profile.sh sample 60s --demo --hide-after 10s --scenario overlay-show-hide-idle
+./script/profile.sh compare-runs <baseline-run-id> <candidate-run-id>
+```
+
 Apple Translation/NaturalLanguage lane:
 
 ```sh
@@ -177,6 +184,16 @@ DERIVED_DATA_DIR=/tmp/musicfloat-perf/DerivedData \
 ./script/profile.sh sample 20s --demo --scenario overlay-karaoke
 ```
 
+For hidden-overlay idle checks, keep the same isolation and use
+`--hide-after` plus the `overlay-show-hide-idle` scenario:
+
+```sh
+RUN_LEDGER=/tmp/musicfloat-perf/runs.jsonl \
+TRACE_DIR=/tmp/musicfloat-perf/traces \
+DERIVED_DATA_DIR=/tmp/musicfloat-perf/DerivedData \
+./script/profile.sh sample 60s --demo --hide-after 10s --scenario overlay-show-hide-idle
+```
+
 For Apple Translation smoke checks, add `--apple-translation` and keep the
 ledger isolated unless you are deliberately producing durable evidence.
 
@@ -184,6 +201,7 @@ Dirty checkout snapshot:
 
 ```sh
 script/profile_snapshot.sh -- ./script/profile.sh sample 30s --demo --scenario overlay-karaoke
+script/profile_snapshot.sh -- ./script/profile.sh sample 60s --demo --hide-after 10s --scenario overlay-show-hide-idle
 script/profile_snapshot.sh --run -- ./script/profile.sh sample 30s --demo --apple-translation --scenario translation-enabled-overlay
 ```
 

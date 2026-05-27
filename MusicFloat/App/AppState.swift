@@ -465,8 +465,9 @@ final class AppState {
         // Build an effective PlayerState that substitutes the high-frequency
         // tick value in for elapsedTime, so the overlay reflects smooth
         // playback while menu-observed fields stay stable.
+        let effectivePlaybackStatus = isOverlayVisible ? playerState.playbackStatus : .paused
         let effectiveState = PlayerState(
-            playbackStatus: playerState.playbackStatus,
+            playbackStatus: effectivePlaybackStatus,
             track: playerState.track,
             elapsedTime: effectiveElapsedTime,
             updatedAt: liveElapsedUpdatedAt
@@ -624,6 +625,29 @@ final class AppState {
     func updateLiveElapsedTime(_ value: TimeInterval) {
         liveElapsedTime = value
         liveElapsedUpdatedAt = Date()
+    }
+
+    /// When the overlay has been hidden, the live tick is stopped to avoid
+    /// wakeups. On reveal, advance once from wall-clock time so lyrics do not
+    /// resume from the stale hidden timestamp while the authoritative Music.app
+    /// snapshot is still being fetched.
+    func resumeLiveElapsedTimeFromWallClock(now: Date = Date()) {
+        guard playerState.playbackStatus == .playing,
+              playerState.track != nil,
+              liveElapsedUpdatedAt != .distantPast else {
+            return
+        }
+
+        let delta = now.timeIntervalSince(liveElapsedUpdatedAt)
+        guard delta.isFinite, delta > 0 else {
+            return
+        }
+
+        liveElapsedTime = MusicPlaybackCommand.clampedPlaybackPosition(
+            liveElapsedTime + delta,
+            duration: playerState.track?.duration
+        )
+        liveElapsedUpdatedAt = now
     }
 
     func setProviderRuntimeState(_ state: ProviderRuntimeState) {

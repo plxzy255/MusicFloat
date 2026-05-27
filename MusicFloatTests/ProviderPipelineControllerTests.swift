@@ -66,6 +66,57 @@ final class ProviderPipelineControllerTests: XCTestCase {
         XCTAssertEqual(lyricsProvider.requestedTrackIDs, [])
     }
 
+    func testLiveResumeWithExistingLyricsDoesNotReloadProvider() {
+        let defaults = UserDefaults(suiteName: "MusicFloatTests.liveResumeReusesLyrics.\(UUID().uuidString)")!
+        let appState = AppState(userDefaults: defaults)
+        appState.runtimeFeatureFlags = .liveAppleMusic
+        appState.isOverlayVisible = true
+        appState.setLiveModeRunning(true)
+        appState.updatePlayerState(playerState(trackID: "track:resume"))
+        let document = LyricsDocument(
+            source: .appleMusicWeb,
+            lines: [LyricLine(id: 0, text: "Keep current lyrics", startTime: 10)],
+            isTimed: true,
+            sourceLanguageIdentifier: "en"
+        )
+        appState.applyLyricsDocument(document)
+        appState.applyProviderReady()
+        let lyricsProvider = RecordingLyricsProvider()
+        let controller = ProviderPipelineController(
+            lyricsProvider: lyricsProvider,
+            translationProvider: RecordingTranslationProvider()
+        )
+        controller.stopHiddenWork(appState: appState)
+
+        controller.resumeVisibleLiveOverlayContent(appState: appState)
+
+        XCTAssertEqual(lyricsProvider.requestedTrackIDs, [])
+        XCTAssertEqual(appState.providerRuntimeState, .ready)
+        XCTAssertEqual(appState.overlayContentState, .ready)
+        XCTAssertEqual(appState.lyricsDocument, document)
+    }
+
+    func testLiveResumeWithoutLyricsRequestsProviderRefresh() async {
+        let defaults = UserDefaults(suiteName: "MusicFloatTests.liveResumeLoadsMissingLyrics.\(UUID().uuidString)")!
+        let appState = AppState(userDefaults: defaults)
+        appState.runtimeFeatureFlags = .liveAppleMusic
+        appState.isOverlayVisible = true
+        appState.setLiveModeRunning(true)
+        appState.updatePlayerState(playerState(trackID: "track:missing"))
+        let lyricsProvider = RecordingLyricsProvider()
+        let controller = ProviderPipelineController(
+            lyricsProvider: lyricsProvider,
+            translationProvider: RecordingTranslationProvider()
+        )
+
+        controller.resumeVisibleLiveOverlayContent(appState: appState)
+        await Task.yield()
+
+        XCTAssertEqual(lyricsProvider.requestedTrackIDs, ["track:missing"])
+        XCTAssertEqual(appState.providerRuntimeState, .unavailable)
+        controller.stopHiddenWork(appState: appState)
+    }
+
     func testAppleMusicWebDocumentsSkipAXRefreshAndCalibration() {
         let document = LyricsDocument(
             source: .appleMusicWeb,

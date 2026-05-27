@@ -86,7 +86,7 @@ struct LyricsOverlayView: View {
             overlayContent(for: snapshot)
             .padding(.horizontal, 24)
             .padding(.vertical, 18)
-            .frame(width: CGFloat(snapshot.widthPreset.width), height: panelHeight, alignment: .leading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .background {
                 LyricsOverlayBackgroundSurface(
                     displayOptions: accessibilityDisplayOptions,
@@ -94,7 +94,7 @@ struct LyricsOverlayView: View {
                 )
             }
         }
-        .frame(width: CGFloat(snapshot.widthPreset.width), height: panelHeight)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
         .onAppear {
             AppTelemetry.windowing.info("Lyrics overlay view appeared")
