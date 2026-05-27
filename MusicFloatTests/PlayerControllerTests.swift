@@ -114,6 +114,27 @@ final class PlayerControllerTests: XCTestCase {
     }
 
     @MainActor
+    func testLiveTickIntervalWakesForLineEndBoundary() {
+        let document = LyricsDocument(
+            source: .appleMusicWeb,
+            lines: [
+                LyricLine(id: 0, text: "Current line", startTime: 0, endTime: 0.4),
+                LyricLine(id: 1, text: "Later line", startTime: 8, endTime: 10)
+            ],
+            isTimed: true
+        )
+
+        let interval = PlayerController.liveTickInterval(
+            currentElapsed: 0,
+            lyricsDocument: document,
+            lyricOffsetSeconds: 0,
+            duration: 120
+        )
+
+        XCTAssertEqual(interval, 0.4, accuracy: 0.0001)
+    }
+
+    @MainActor
     func testPreviewRefreshUsesTrackDurationForUntimedLyrics() {
         let controller = PlayerController(bridge: MockMusicAppBridge())
         let track = NowPlayingTrack(
@@ -146,6 +167,32 @@ final class PlayerControllerTests: XCTestCase {
         )
 
         XCTAssertEqual(interval, 20, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testPreviewRefreshUsesLineEndBoundaryForTimedLyrics() {
+        let controller = PlayerController(bridge: MockMusicAppBridge())
+        let state = PlayerState(
+            playbackStatus: .playing,
+            track: MockMusicAppBridge.previewTrack,
+            elapsedTime: 3,
+            updatedAt: Date()
+        )
+        let document = LyricsDocument(
+            source: .appleMusicWeb,
+            lines: [
+                LyricLine(id: 0, text: "Current sentence", startTime: 1, endTime: 4),
+                LyricLine(id: 1, text: "Later sentence", startTime: 12, endTime: 14)
+            ],
+            isTimed: true
+        )
+
+        let interval = controller.nextRefreshInterval(
+            currentState: state,
+            lyricsDocument: document
+        )
+
+        XCTAssertEqual(interval, 1, accuracy: 0.001)
     }
 
     @MainActor

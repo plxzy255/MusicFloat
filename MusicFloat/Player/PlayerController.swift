@@ -408,12 +408,21 @@ final class PlayerController {
         lyricOffsetSeconds: Double,
         duration: TimeInterval?
     ) -> TimeInterval {
-        let nextLine = LyricsSyncEngine().nextLineStart(
+        let syncEngine = LyricsSyncEngine()
+        let effectiveElapsed = currentElapsed + lyricOffsetSeconds
+        let nextLine = syncEngine.nextLineStart(
             in: lyricsDocument,
-            after: currentElapsed + lyricOffsetSeconds,
+            after: effectiveElapsed,
             duration: duration
         )
-        let targetElapsed = nextLine.map { $0 - lyricOffsetSeconds }
+        let nextLineEnd = syncEngine.nextLineEnd(
+            in: lyricsDocument,
+            after: effectiveElapsed
+        )
+        let nextDisplayBoundary = [nextLine, nextLineEnd]
+            .compactMap { $0 }
+            .min()
+        let targetElapsed = nextDisplayBoundary.map { $0 - lyricOffsetSeconds }
             ?? (currentElapsed + Self.liveLineTickCap)
         let targetDelta = targetElapsed - currentElapsed
         return max(Self.liveTickMinimum, min(Self.liveLineTickCap, targetDelta))
@@ -497,14 +506,21 @@ final class PlayerController {
         guard currentState.playbackStatus == .playing else {
             return Self.hiddenIdleRefreshInterval
         }
-        guard let nextLineStart = syncEngine.nextLineStart(
+        let nextLineStart = syncEngine.nextLineStart(
             in: lyricsDocument,
             after: currentState.elapsedTime,
             duration: currentState.track?.duration
-        ) else {
+        )
+        let nextLineEnd = syncEngine.nextLineEnd(
+            in: lyricsDocument,
+            after: currentState.elapsedTime
+        )
+        guard let nextDisplayBoundary = [nextLineStart, nextLineEnd]
+            .compactMap({ $0 })
+            .min() else {
             return Self.hiddenIdleRefreshInterval
         }
-        return max(0.25, nextLineStart - currentState.elapsedTime)
+        return max(0.25, nextDisplayBoundary - currentState.elapsedTime)
     }
 
     private static func nanoseconds(for interval: TimeInterval) -> UInt64 {

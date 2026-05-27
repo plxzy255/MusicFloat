@@ -159,6 +159,34 @@ final class LyricsSyncEngineTests: XCTestCase {
     }
 
     @MainActor
+    func testNextLineEndReturnsUpcomingTimedBoundary() {
+        let document = LyricsDocument(
+            source: .appleMusicWeb,
+            lines: [
+                LyricLine(id: 0, text: "first", startTime: 1, endTime: 4),
+                LyricLine(id: 1, text: "second", startTime: 10, endTime: 12)
+            ],
+            isTimed: true
+        )
+
+        XCTAssertEqual(LyricsSyncEngine().nextLineEnd(in: document, after: 3), 4)
+    }
+
+    @MainActor
+    func testNextLineEndRespectsOffsetCorrection() {
+        let document = LyricsDocument(
+            source: .appleMusicWeb,
+            lines: [
+                LyricLine(id: 0, text: "offset line", startTime: 8, endTime: 10)
+            ],
+            isTimed: true,
+            offsetCorrection: 2
+        )
+
+        XCTAssertEqual(LyricsSyncEngine().nextLineEnd(in: document, after: 7.5), 8)
+    }
+
+    @MainActor
     func testNextSyllableBoundaryRespectsOffsetCorrection() {
         let document = LyricsDocument(
             source: .appleMusicWeb,

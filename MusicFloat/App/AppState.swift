@@ -63,6 +63,7 @@ struct LyricsOverlayLine: Equatable, Identifiable, Sendable {
     let line: LyricLine
     let role: LyricsOverlayLineRole
     let translationText: String?
+    var isGapPlaceholder = false
 
     var id: LyricLine.ID {
         line.id
@@ -85,7 +86,11 @@ struct LyricsOverlaySnapshot: Equatable, Sendable {
 }
 
 struct LyricsOverlaySnapshotBuilder: Sendable {
+    static let gapPlaceholderText = "..."
+    static let gapPlaceholderThreshold: TimeInterval = 2.0
+
     private let syncEngine = LyricsSyncEngine()
+    private static let leadingGapPlaceholderID = -1_000_000
 
     static func activeSyllableIndex(in line: LyricLine, at effectiveLyricTime: TimeInterval) -> Int? {
         guard !line.syllables.isEmpty else {
@@ -242,6 +247,16 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
                   }) else {
                 return []
             }
+            if shouldShowLeadingGap(before: document.lines[nextIndex], effectiveLyricTime: effectiveLyricTime) {
+                return [
+                    gapPlaceholder(id: Self.leadingGapPlaceholderID, role: .active),
+                    LyricsOverlayLine(
+                        line: document.lines[nextIndex],
+                        role: .next,
+                        translationText: nil
+                    )
+                ]
+            }
             return [
                 LyricsOverlayLine(
                     line: document.lines[nextIndex],
@@ -249,6 +264,14 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
                     translationText: nil
                 )
             ]
+        }
+
+        if let gapWindow = interlineGapWindow(
+            in: document,
+            activeIndex: activeIndex,
+            effectiveLyricTime: effectiveLyricTime
+        ) {
+            return gapWindow
         }
 
         let lowerBound = max(0, activeIndex - 1)
@@ -271,6 +294,60 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
                 translationText: role == .active && showsTranslation ? translation.text(for: line) : nil
             )
         }
+    }
+
+    private static func shouldShowLeadingGap(before line: LyricLine, effectiveLyricTime: TimeInterval) -> Bool {
+        guard let startTime = line.startTime,
+              startTime >= gapPlaceholderThreshold,
+              effectiveLyricTime < startTime else {
+            return false
+        }
+        return true
+    }
+
+    private static func interlineGapWindow(
+        in document: LyricsDocument,
+        activeIndex: Int,
+        effectiveLyricTime: TimeInterval
+    ) -> [LyricsOverlayLine]? {
+        let nextIndex = activeIndex + 1
+        guard document.isTimed,
+              document.lines.indices.contains(activeIndex),
+              document.lines.indices.contains(nextIndex),
+              let currentEnd = document.lines[activeIndex].endTime,
+              let nextStart = document.lines[nextIndex].startTime,
+              nextStart - currentEnd >= gapPlaceholderThreshold,
+              currentEnd <= effectiveLyricTime,
+              effectiveLyricTime < nextStart else {
+            return nil
+        }
+
+        return [
+            LyricsOverlayLine(
+                line: document.lines[activeIndex],
+                role: .previous,
+                translationText: nil
+            ),
+            gapPlaceholder(id: gapPlaceholderID(after: activeIndex), role: .active),
+            LyricsOverlayLine(
+                line: document.lines[nextIndex],
+                role: .next,
+                translationText: nil
+            )
+        ]
+    }
+
+    private static func gapPlaceholder(id: Int, role: LyricsOverlayLineRole) -> LyricsOverlayLine {
+        LyricsOverlayLine(
+            line: LyricLine(id: id, text: gapPlaceholderText, startTime: nil),
+            role: role,
+            translationText: nil,
+            isGapPlaceholder: true
+        )
+    }
+
+    private static func gapPlaceholderID(after index: Int) -> Int {
+        leadingGapPlaceholderID - index - 1
     }
 
     private static func syllableProgress(
