@@ -1,0 +1,2 @@
+prefix_rule(pattern=["xcodebuildmcp"], decision="allow")
+prefix_rule(pattern=["git", "rebase"], decision="allow")
