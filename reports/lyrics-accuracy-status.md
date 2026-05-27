@@ -1,6 +1,6 @@
 # Live Lyrics Accuracy — Status & Next Steps
 
-Last updated: 2026-05-25
+Last updated: 2026-05-27
 
 Snapshot of where the live-lyrics pipeline stands after the active-line AX pass,
 Apple Music web-API integration, syllable-aware overlay progress, and the latest
@@ -34,6 +34,12 @@ The live-refresh tick in `ProviderPipelineController` recognizes the source of t
 - **LRCLIB calibration**: when LRCLIB returns timed lyrics for a different master than the user is playing, the AX-driven calibration nudges the clock back into agreement using the overlay's effective live elapsed time rather than the sparse now-playing snapshot.
 - **Driven seek/track-change recovery**: live run `20260525-080546Z-live-Direct-Sample-28b81d4` launched `--live --drive-music`, loaded a non-mock Apple Music web document (`line_count=64`), detected a +15s seek via the watchdog, resynced the live clock, handled a next-track event, and detected a later seek correction. The run had `network_timeout_count=0`.
 - **Clean driven live recovery evidence**: snapshot run `20260525-142048Z-live-Direct-Sample-52adb7a` repeated the driven path from a clean temporary worktree. It proved Music.app playback, overlay appearance, provider readiness, one watchdog seek, one resync, one track change, and Apple Music web lyrics after the track change (`line_count=50`, `syllable_count=0`). The live log also showed a line-only Apple Music web path (`timed=false`); visual proof that the overlay never shows fake word-fill still needs a screenshot, video, or UI snapshot.
+- **Lagged AppleScript snapshots no longer block track changes**: 2026-05-27
+  manual logs showed correct `com.apple.Music.playerInfo` track-change events
+  arriving while the AppleScript snapshot still reported the previous track.
+  The event bridge now retries briefly, ignores snapshots whose track identity
+  disagrees with the notification, and accepts the notification track rather
+  than leaving lyrics, translation, and artwork attached to the old track.
 - **Plain Apple Music web docs stay sentence-first**: Apple Music web documents
   now skip AX replacement whether they are timed or plain. Timed TTML keeps the
   Apple clock; line-only/plain web lyrics keep equal estimated sentence windows
@@ -47,6 +53,10 @@ The live-refresh tick in `ProviderPipelineController` recognizes the source of t
 ## Known issues
 
 - **Seek / scrub long-run coverage**: the latest driven run proved the watchdog can detect seek jumps and resync the live clock, but it covered one session and line-timed Apple Music web lyrics. Keep this as a monitoring item for scrub-heavy manual use, syllable-heavy TTML, and tracks where Music's own highlight jumps differently from the web TTML timing.
+- **Lagged snapshot fix needs live confirmation**: the 2026-05-27 bridge fix
+  is covered by unit tests and build validation, but it has not yet been run
+  through `--live --drive-music` or verified against a manual skip in the user's
+  active app session.
 - **Catalog ID resolution misses**: some tracks can still log `AM web: could not resolve catalog ID for track` and fall back to LRCLIB / AX. The resolver now scores `hasLyrics`, `hasTimeSyncedLyrics`, and `audioLocale`, and the web provider suppresses short-term repeated misses per track. Remaining root causes likely include:
   - AppleScript `URL of current track` is empty for some catalog playback paths (cloud library matches, Apple Music radio, queued recommendations).
   - The catalog-search fallback still only requests `types=songs`; matching may remain too strict for renamed/translated/explicit-tagged variants.

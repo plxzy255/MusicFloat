@@ -218,52 +218,60 @@ final class MusicAppBridgeEventRefinementTests: XCTestCase {
         XCTAssertEqual(refined.state.elapsedTime, 82.5, accuracy: 0.001)
     }
 
-    func testMismatchedNewTrackEventDefersUntilSnapshotAgrees() {
+    func testMismatchedNewTrackEventUsesEventWithoutStaleSnapshot() {
+        let now = Date()
+        let previous = PlayerState(
+            playbackStatus: .playing,
+            track: Self.track(id: "track-old"),
+            elapsedTime: 42,
+            updatedAt: now.addingTimeInterval(-1)
+        )
         let event = PlayerState(
             playbackStatus: .playing,
             track: Self.track(id: "track-new"),
             elapsedTime: 0,
-            updatedAt: Date()
+            updatedAt: now
         )
 
-        XCTAssertTrue(PublicAppleMusicAppBridge.shouldDeferPlayerInfoEvent(
+        let refined = PublicAppleMusicAppBridge.refinePlayerInfoEvent(
             event: event,
-            isNewTrackEvent: true,
-            hasMatchingSnapshot: false,
-            hasMismatchedSnapshot: true
-        ))
-    }
-
-    func testMismatchedSameTrackEventStillRefinesFromLocalClock() {
-        let event = PlayerState(
-            playbackStatus: .playing,
-            track: Self.track(id: "track-1"),
-            elapsedTime: 0,
-            updatedAt: Date()
+            lastEmittedState: previous,
+            lastEmittedAt: now.addingTimeInterval(-1),
+            snapshot: nil,
+            now: now
         )
 
-        XCTAssertFalse(PublicAppleMusicAppBridge.shouldDeferPlayerInfoEvent(
-            event: event,
-            isNewTrackEvent: false,
-            hasMatchingSnapshot: false,
-            hasMismatchedSnapshot: true
-        ))
+        XCTAssertEqual(refined.state.track?.id, "track-new")
+        XCTAssertEqual(refined.state.elapsedTime, 0)
+        XCTAssertFalse(refined.refineSucceeded)
     }
 
     func testNewTrackEventUsesMatchingSnapshotWhenAvailable() {
+        let now = Date()
         let event = PlayerState(
             playbackStatus: .playing,
             track: Self.track(id: "track-new"),
             elapsedTime: 0,
-            updatedAt: Date()
+            updatedAt: now
+        )
+        let snapshot = PlayerState(
+            playbackStatus: .playing,
+            track: Self.track(id: "track-new"),
+            elapsedTime: 12,
+            updatedAt: now
         )
 
-        XCTAssertFalse(PublicAppleMusicAppBridge.shouldDeferPlayerInfoEvent(
+        let refined = PublicAppleMusicAppBridge.refinePlayerInfoEvent(
             event: event,
-            isNewTrackEvent: true,
-            hasMatchingSnapshot: true,
-            hasMismatchedSnapshot: false
-        ))
+            lastEmittedState: nil,
+            lastEmittedAt: now,
+            snapshot: snapshot,
+            now: now
+        )
+
+        XCTAssertEqual(refined.state.track?.id, "track-new")
+        XCTAssertEqual(refined.state.elapsedTime, 12)
+        XCTAssertTrue(refined.refineSucceeded)
     }
 
     private static func track(id: String) -> NowPlayingTrack {

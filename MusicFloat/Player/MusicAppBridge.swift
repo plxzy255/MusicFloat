@@ -202,9 +202,6 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
                     // current track, and mixing that elapsed time with the new
                     // track makes lyrics look many lines behind.
                     var matchingSnapshot: PlayerState?
-                    var shouldDeferMismatchedNewTrackEvent = false
-                    let isNewTrackEvent = event.track?.id != nil && event.track?.id != lastEmittedState?.track?.id
-
                     if event.playbackStatus != .stopped {
                         let maxAttempts = 3
                         for attempt in 0..<maxAttempts {
@@ -218,28 +215,15 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
                                let snapshotTrack = snapshot.track,
                                 eventTrack.id != snapshotTrack.id {
                                 AppTelemetry.performance.info(
-                                    "Music snapshot lagged new-track event; eventTrack=\(eventTrack.telemetryID, privacy: .public) snapshotTrack=\(snapshotTrack.telemetryID, privacy: .public) deferring event until snapshot agrees"
+                                    "Music snapshot lagged event; eventTrack=\(eventTrack.telemetryID, privacy: .public) snapshotTrack=\(snapshotTrack.telemetryID, privacy: .public) ignoring stale snapshot"
                                 )
-                                if isNewTrackEvent {
-                                    shouldDeferMismatchedNewTrackEvent = true
-                                }
                                 continue
                             }
                             matchingSnapshot = snapshot
-                            shouldDeferMismatchedNewTrackEvent = false
                             break
                         }
                     } else if event.track == nil {
                         matchingSnapshot = await Self.pullSnapshot()
-                    }
-
-                    if Self.shouldDeferPlayerInfoEvent(
-                        event: event,
-                        isNewTrackEvent: isNewTrackEvent,
-                        hasMatchingSnapshot: matchingSnapshot != nil,
-                        hasMismatchedSnapshot: shouldDeferMismatchedNewTrackEvent
-                    ) {
-                        continue
                     }
 
                     let refinedEvent = Self.refinePlayerInfoEvent(
@@ -265,19 +249,6 @@ struct PublicAppleMusicAppBridge: MusicAppBridge {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
-    }
-
-    static func shouldDeferPlayerInfoEvent(
-        event: PlayerState,
-        isNewTrackEvent: Bool,
-        hasMatchingSnapshot: Bool,
-        hasMismatchedSnapshot: Bool
-    ) -> Bool {
-        event.playbackStatus != .stopped
-            && event.track != nil
-            && isNewTrackEvent
-            && !hasMatchingSnapshot
-            && hasMismatchedSnapshot
     }
 
     @MainActor
