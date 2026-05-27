@@ -184,18 +184,19 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
             )
         case .ready:
             let effectiveLyricTime = playerState.elapsedTime + lyricOffsetSeconds + lyricsDocument.offsetCorrection
-            let activeLine = syncEngine.activeLine(
+            let timelinePosition = syncEngine.timelinePosition(
                 in: lyricsDocument,
                 at: playerState.elapsedTime + lyricOffsetSeconds,
                 duration: playerState.track?.duration
             )
-            let lyricText = activeLine?.text ?? "Lyrics unavailable"
+            let activeLine = timelinePosition.activeLine
+            let lyricText = timelinePosition.isInterlude ? "..." : activeLine?.text ?? "Lyrics unavailable"
             let translationText = activeLine.flatMap { line in
                 showsTranslation ? translation.text(for: line) : nil
             }
             let lyricWindow = Self.lyricWindow(
                 in: lyricsDocument,
-                activeLine: activeLine,
+                timelinePosition: timelinePosition,
                 effectiveLyricTime: effectiveLyricTime,
                 translation: translation,
                 showsTranslation: showsTranslation
@@ -224,7 +225,7 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
 
     private static func lyricWindow(
         in document: LyricsDocument,
-        activeLine: LyricLine?,
+        timelinePosition: LyricsTimelinePosition,
         effectiveLyricTime: TimeInterval,
         translation: LyricTranslation,
         showsTranslation: Bool
@@ -233,6 +234,31 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
             return []
         }
 
+        if timelinePosition.isInterlude {
+            var window: [LyricsOverlayLine] = []
+            if let previous = timelinePosition.previousLine {
+                window.append(LyricsOverlayLine(
+                    line: previous,
+                    role: .previous,
+                    translationText: nil
+                ))
+            }
+            window.append(LyricsOverlayLine(
+                line: interludeMarkerLine(previous: timelinePosition.previousLine, next: timelinePosition.nextLine),
+                role: .active,
+                translationText: nil
+            ))
+            if let next = timelinePosition.nextLine {
+                window.append(LyricsOverlayLine(
+                    line: next,
+                    role: .next,
+                    translationText: nil
+                ))
+            }
+            return window
+        }
+
+        let activeLine = timelinePosition.activeLine
         guard let activeLine,
               let activeIndex = document.lines.firstIndex(where: { $0.id == activeLine.id }) else {
             guard document.isTimed,
@@ -271,6 +297,15 @@ struct LyricsOverlaySnapshotBuilder: Sendable {
                 translationText: role == .active && showsTranslation ? translation.text(for: line) : nil
             )
         }
+    }
+
+    private static func interludeMarkerLine(previous: LyricLine?, next: LyricLine?) -> LyricLine {
+        let anchorID = next?.id ?? previous?.id ?? 0
+        return LyricLine(
+            id: -1_000_000 - max(0, anchorID),
+            text: "...",
+            startTime: nil
+        )
     }
 
     private static func syllableProgress(

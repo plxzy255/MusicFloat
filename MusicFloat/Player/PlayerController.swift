@@ -325,10 +325,10 @@ final class PlayerController {
             var consecutiveResyncFailures = 0
 
             while !Task.isCancelled {
-                // Sleep until the next lyric line boundary or the watchdog
-                // cadence. Syllable fill is now animated locally in the active
-                // lyric row, so the whole overlay no longer needs a 120 ms
-                // app-state tick just to move the karaoke mask.
+                // Sleep until the next lyric display boundary or the watchdog
+                // cadence. Syllable fill is animated locally in the active
+                // lyric row, so the whole overlay wakes for line starts, line
+                // ends, and interludes instead of every syllable.
                 let sleep = Self.liveTickInterval(
                     currentElapsed: elapsed,
                     lyricsDocument: appState.lyricsDocument,
@@ -408,12 +408,12 @@ final class PlayerController {
         lyricOffsetSeconds: Double,
         duration: TimeInterval?
     ) -> TimeInterval {
-        let nextLine = LyricsSyncEngine().nextLineStart(
+        let nextBoundary = LyricsSyncEngine().nextDisplayBoundary(
             in: lyricsDocument,
             after: currentElapsed + lyricOffsetSeconds,
             duration: duration
         )
-        let targetElapsed = nextLine.map { $0 - lyricOffsetSeconds }
+        let targetElapsed = nextBoundary.map { $0 - lyricOffsetSeconds }
             ?? (currentElapsed + Self.liveLineTickCap)
         let targetDelta = targetElapsed - currentElapsed
         return max(Self.liveTickMinimum, min(Self.liveLineTickCap, targetDelta))
@@ -497,7 +497,7 @@ final class PlayerController {
         guard currentState.playbackStatus == .playing else {
             return Self.hiddenIdleRefreshInterval
         }
-        guard let nextLineStart = syncEngine.nextLineStart(
+        guard let nextLineStart = syncEngine.nextDisplayBoundary(
             in: lyricsDocument,
             after: currentState.elapsedTime,
             duration: currentState.track?.duration

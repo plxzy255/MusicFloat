@@ -107,10 +107,18 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
 
     @MainActor
     func testReadySnapshotShowsNextLineBeforeFirstTimedLyricStarts() {
+        let document = LyricsDocument(
+            source: .appleMusicWeb,
+            lines: [
+                LyricLine(id: 0, text: "Soon", startTime: 2),
+                LyricLine(id: 1, text: "Later", startTime: 8)
+            ],
+            isTimed: true
+        )
         let snapshot = LyricsOverlaySnapshotBuilder().makeSnapshot(
             contentState: .ready,
-            playerState: playerState(elapsedTime: 2),
-            lyricsDocument: timedDocument(),
+            playerState: playerState(elapsedTime: 1),
+            lyricsDocument: document,
             translation: lineTranslations(),
             showsTranslation: true,
             widthPreset: .medium
@@ -120,6 +128,62 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
         XCTAssertEqual(snapshot.lyricWindow.map(\.id), [0])
         XCTAssertEqual(snapshot.lyricWindow.map(\.role), [.next])
         XCTAssertNil(snapshot.lyricWindow.first?.translationText)
+    }
+
+    @MainActor
+    func testReadySnapshotShowsInterludeMarkerBeforeDelayedFirstTimedLine() {
+        let document = LyricsDocument(
+            source: .appleMusicWeb,
+            lines: [
+                LyricLine(id: 0, text: "First timed line", startTime: 5, endTime: 9),
+                LyricLine(id: 1, text: "Second timed line", startTime: 12, endTime: 15)
+            ],
+            isTimed: true,
+            sourceLanguageIdentifier: "en"
+        )
+
+        let snapshot = LyricsOverlaySnapshotBuilder().makeSnapshot(
+            contentState: .ready,
+            playerState: playerState(elapsedTime: 1),
+            lyricsDocument: document,
+            translation: lineTranslations(),
+            showsTranslation: true,
+            widthPreset: .medium
+        )
+
+        XCTAssertNil(snapshot.activeLine)
+        XCTAssertEqual(snapshot.lyricText, "...")
+        XCTAssertEqual(snapshot.lyricWindow.map(\.line.text), ["...", "First timed line"])
+        XCTAssertEqual(snapshot.lyricWindow.map(\.role), [.active, .next])
+        XCTAssertEqual(snapshot.lyricWindow.map(\.translationText), [nil, nil])
+    }
+
+    @MainActor
+    func testReadySnapshotShowsInterludeMarkerBetweenEndedTimedLines() {
+        let document = LyricsDocument(
+            source: .appleMusicWeb,
+            lines: [
+                LyricLine(id: 0, text: "First timed line", startTime: 0, endTime: 4),
+                LyricLine(id: 1, text: "Second timed line", startTime: 8, endTime: 12)
+            ],
+            isTimed: true,
+            sourceLanguageIdentifier: "en"
+        )
+
+        let snapshot = LyricsOverlaySnapshotBuilder().makeSnapshot(
+            contentState: .ready,
+            playerState: playerState(elapsedTime: 5),
+            lyricsDocument: document,
+            translation: lineTranslations(),
+            showsTranslation: true,
+            widthPreset: .medium
+        )
+
+        XCTAssertNil(snapshot.activeLine)
+        XCTAssertEqual(snapshot.lyricText, "...")
+        XCTAssertEqual(snapshot.lyricWindow.map(\.line.text), ["First timed line", "...", "Second timed line"])
+        XCTAssertEqual(snapshot.lyricWindow.map(\.role), [.previous, .active, .next])
+        XCTAssertEqual(snapshot.lyricWindow.map(\.translationText), [nil, nil, nil])
     }
 
     @MainActor
@@ -171,7 +235,16 @@ final class OverlaySnapshotBuilderTests: XCTestCase {
 
     @MainActor
     func testLyricWindowUsesStableLineIDsAcrossRoleChanges() {
-        let document = timedDocument()
+        let document = LyricsDocument(
+            source: .appleMusicWeb,
+            lines: [
+                LyricLine(id: 0, text: "First timed line", startTime: 2.5),
+                LyricLine(id: 1, text: "Middle timed line", startTime: 10),
+                LyricLine(id: 2, text: "Last timed line", startTime: 20)
+            ],
+            isTimed: true,
+            sourceLanguageIdentifier: "en"
+        )
         let translation = lineTranslations()
         let before = LyricsOverlaySnapshotBuilder().makeSnapshot(
             contentState: .ready,
