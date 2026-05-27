@@ -34,9 +34,9 @@ usage() {
   cat >&2 <<'EOF'
 usage:
   script/profile.sh list
-  script/profile.sh record [template] [duration] [--demo] [--live] [--drive-music] [--apple-translation] [--scenario name]
-  script/profile.sh phased [--demo] [--live] [--drive-music] [--apple-translation] [--scenario name]
-  script/profile.sh sample [duration] [--demo] [--live] [--drive-music] [--apple-translation] [--scenario name]
+  script/profile.sh record [template] [duration] [--demo] [--live] [--drive-music] [--apple-translation] [--hide-after duration] [--scenario name]
+  script/profile.sh phased [--demo] [--live] [--drive-music] [--apple-translation] [--hide-after duration] [--scenario name]
+  script/profile.sh sample [duration] [--demo] [--live] [--drive-music] [--apple-translation] [--hide-after duration] [--scenario name]
   script/profile.sh report
   script/profile.sh compare-runs [--strict] <baseline-run-id> <candidate-run-id>
   script/profile.sh preflight-live [--drive-music]
@@ -55,6 +55,7 @@ examples:
   script/profile.sh record "Time Profiler" 20s
   script/profile.sh record "Allocations" 30s --live --scenario overlay-karaoke
   script/profile.sh sample 30s --demo --apple-translation --scenario translation-enabled-overlay
+  script/profile.sh sample 60s --demo --hide-after 10s --scenario overlay-show-hide-idle
   script/profile.sh phased --live --scenario overlay-karaoke
   script/profile.sh sample 30s --live --scenario overlay-karaoke
   script/profile.sh report
@@ -82,6 +83,8 @@ examples:
             unrelated evidence.
 --apple-translation: Builds with ENABLE_APPLE_TRANSLATION so Translation and
                      NaturalLanguage cost is measured in a dedicated lane.
+--hide-after: Hides the overlay after the given duration. Use with --demo or
+              --live to measure post-hide idle behavior in one run.
 EOF
 }
 
@@ -193,6 +196,33 @@ parse_scenario() {
   printf "%s" "$scenario"
 }
 
+parse_hide_after() {
+  local hide_after=""
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --hide-after)
+        if [[ "$#" -lt 2 ]]; then
+          echo "Error: --hide-after requires a value" >&2
+          exit 2
+        fi
+        hide_after="$2"
+        shift 2
+        ;;
+      --hide-after=*)
+        hide_after="${1#--hide-after=}"
+        shift
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -n "$hide_after" ]]; then
+    duration_to_sleep_seconds "$hide_after"
+  fi
+}
+
 parse_sample_duration() {
   local duration="20s"
   local found="false"
@@ -201,6 +231,16 @@ parse_sample_duration() {
   while [[ "$#" -gt 0 ]]; do
     case "$1" in
       --demo|--live|--drive-music|--apple-translation|--translation-enabled)
+        shift
+        ;;
+      --hide-after)
+        if [[ "$#" -lt 2 ]]; then
+          echo "Error: --hide-after requires a value" >&2
+          exit 2
+        fi
+        shift 2
+        ;;
+      --hide-after=*)
         shift
         ;;
       --scenario)
@@ -739,6 +779,7 @@ append_run_ledger() {
   local usage_path="${10}"
   local live_log_path="${11}"
   local failure_reason="${12:-}"
+  local hide_after_seconds="${13:-}"
 
   /bin/mkdir -p "$(dirname "$RUN_LEDGER")"
   RUN_ID="$run_id" \
@@ -754,6 +795,7 @@ append_run_ledger() {
   RUN_USAGE_PATH="$usage_path" \
   RUN_LIVE_LOG_PATH="$live_log_path" \
   RUN_FAILURE_REASON="$failure_reason" \
+  RUN_HIDE_AFTER_SECONDS="$hide_after_seconds" \
   RUN_LEDGER="$RUN_LEDGER" \
   RUN_WORKSPACE="$PWD" \
   RUN_BRANCH="$(git_value branch --show-current)" \
@@ -936,6 +978,7 @@ record = {
         "marketing_version": env("RUN_MARKETING_VERSION") or None,
         "build_version": env("RUN_BUILD_VERSION") or None,
         "apple_translation_build": env("RUN_APPLE_TRANSLATION_BUILD") == "true",
+        "hide_after_seconds": float(env("RUN_HIDE_AFTER_SECONDS")) if env("RUN_HIDE_AFTER_SECONDS") else None,
     },
     "usage": usage,
     "artifacts": {
@@ -988,6 +1031,14 @@ verify_live_recording() {
   fi
 }
 
+verify_hide_after_log() {
+  local log_path="$1"
+  require_live_log_pattern "$log_path" "Hide overlay requested reason=autoHide" "auto-hide overlay request" || return 1
+  require_live_log_pattern "$log_path" "Hide floating panel" "floating panel hide" || return 1
+  echo "  Hide-after verification: overlay hide confirmed"
+  echo "  Verification log: $log_path"
+}
+
 verify_live_log() {
   local log_path="$1"
   local drive_music="${2:-false}"
@@ -1013,7 +1064,7 @@ verify_live_log() {
 }
 
 # ── record_one: records a single template ───────────────────────────────────
-# Args: template duration use_demo use_live scenario drive_music
+# Args: template duration use_demo use_live scenario drive_music hide_after_seconds
 record_one() {
   local template="$1"
   local duration="$2"
@@ -1021,6 +1072,7 @@ record_one() {
   local use_live="${4:-false}"
   local scenario="${5:-unspecified}"
   local drive_music="${6:-false}"
+  local hide_after_seconds="${7:-}"
   local timestamp
   timestamp="$(/bin/date -u +%Y%m%d-%H%M%SZ)"
   local safe_name="${template// /-}"
@@ -1043,8 +1095,11 @@ record_one() {
   elif [[ "$use_live" == "true" ]]; then
     launch_args+=("--live")
   fi
+  if [[ -n "$hide_after_seconds" ]]; then
+    launch_args+=("--hide-after=$hide_after_seconds")
+  fi
 
-  if [[ "$use_live" == "true" ]]; then
+  if [[ "$use_live" == "true" || -n "$hide_after_seconds" ]]; then
     ledger_live_log_path="$live_log_path"
     live_log_pid="$(start_live_log_capture "$live_log_path")"
     /bin/sleep 0.5
@@ -1072,7 +1127,7 @@ record_one() {
 
   if [[ "$record_status" -ne 0 ]]; then
     printf "\033[1;31mFAILED\033[0m\n   %s\n" "$record_output"
-    append_run_ledger "$run_id" "record" "$(mode_name "$use_demo" "$use_live")" "$scenario" "$duration" "$template" "failed" "false" "$trace_path" "$usage_log_path" "$ledger_live_log_path" "xctrace exited non-zero"
+    append_run_ledger "$run_id" "record" "$(mode_name "$use_demo" "$use_live")" "$scenario" "$duration" "$template" "failed" "false" "$trace_path" "$usage_log_path" "$ledger_live_log_path" "xctrace exited non-zero" "$hide_after_seconds"
     return 1
   fi
 
@@ -1080,17 +1135,24 @@ record_one() {
     if ! verify_live_recording "$live_log_path" "$trace_path" "$drive_music"; then
       printf "\033[1;31mFAILED\033[0m\n"
       [[ "$drive_music" == "true" ]] && echo "  Music driver log: $driver_log_path"
-      append_run_ledger "$run_id" "record" "$(mode_name "$use_demo" "$use_live")" "$scenario" "$duration" "$template" "failed" "false" "$trace_path" "$usage_log_path" "$ledger_live_log_path" "live verification failed"
+      append_run_ledger "$run_id" "record" "$(mode_name "$use_demo" "$use_live")" "$scenario" "$duration" "$template" "failed" "false" "$trace_path" "$usage_log_path" "$ledger_live_log_path" "live verification failed" "$hide_after_seconds"
       return 1
     fi
     [[ "$drive_music" == "true" ]] && echo "  Music driver log: $driver_log_path"
   fi
+  if [[ -n "$hide_after_seconds" ]]; then
+    if ! verify_hide_after_log "$live_log_path"; then
+      printf "\033[1;31mFAILED\033[0m\n"
+      append_run_ledger "$run_id" "record" "$(mode_name "$use_demo" "$use_live")" "$scenario" "$duration" "$template" "failed" "false" "$trace_path" "$usage_log_path" "$ledger_live_log_path" "hide-after verification failed" "$hide_after_seconds"
+      return 1
+    fi
+  fi
   if ! summarize_usage_capture "$usage_log_path"; then
     printf "\033[1;31mFAILED\033[0m\n"
-    append_run_ledger "$run_id" "record" "$(mode_name "$use_demo" "$use_live")" "$scenario" "$duration" "$template" "failed" "false" "$trace_path" "$usage_log_path" "$ledger_live_log_path" "usage capture failed"
+    append_run_ledger "$run_id" "record" "$(mode_name "$use_demo" "$use_live")" "$scenario" "$duration" "$template" "failed" "false" "$trace_path" "$usage_log_path" "$ledger_live_log_path" "usage capture failed" "$hide_after_seconds"
     return 1
   fi
-  append_run_ledger "$run_id" "record" "$(mode_name "$use_demo" "$use_live")" "$scenario" "$duration" "$template" "passed" "true" "$trace_path" "$usage_log_path" "$ledger_live_log_path"
+  append_run_ledger "$run_id" "record" "$(mode_name "$use_demo" "$use_live")" "$scenario" "$duration" "$template" "passed" "true" "$trace_path" "$usage_log_path" "$ledger_live_log_path" "" "$hide_after_seconds"
 
   printf "\033[1;32m✓\033[0m %s\n" "$trace_path"
   return 0
@@ -1106,6 +1168,8 @@ do_record() {
   local drive_music="false"
   local scenario
   scenario="$(parse_scenario "$@")"
+  local hide_after_seconds
+  hide_after_seconds="$(parse_hide_after "$@")"
 
   # Parse flags (can be anywhere after mode)
   for arg in "$@"; do
@@ -1126,10 +1190,11 @@ do_record() {
   echo "  Demo mode: $use_demo"
   echo "  Live mode: $use_live"
   echo "  Drive Music: $drive_music"
+  echo "  Hide after: ${hide_after_seconds:-none}"
   echo "  Apple Translation build: $(apple_translation_build_enabled && printf true || printf false)"
   echo ""
 
-  record_one "$template" "$duration" "$use_demo" "$use_live" "$scenario" "$drive_music"
+  record_one "$template" "$duration" "$use_demo" "$use_live" "$scenario" "$drive_music" "$hide_after_seconds"
   print_artifact_usage
 }
 
@@ -1141,6 +1206,8 @@ do_phased() {
   local drive_music="false"
   local scenario
   scenario="$(parse_scenario "$@")"
+  local hide_after_seconds
+  hide_after_seconds="$(parse_hide_after "$@")"
   for arg in "$@"; do
     [[ "$arg" == "--demo" ]] && use_demo="true"
     [[ "$arg" == "--live" ]] && use_live="true"
@@ -1162,7 +1229,7 @@ do_phased() {
 
   echo ""
   echo "  ═══════════════════════════════════════════════════════════"
-  printf "  Phased profiling: %d templates | Demo: %s | Live: %s | Drive Music: %s | Apple Translation build: %s\n" "$total" "$use_demo" "$use_live" "$drive_music" "$(apple_translation_build_enabled && printf true || printf false)"
+  printf "  Phased profiling: %d templates | Demo: %s | Live: %s | Drive Music: %s | Hide after: %s | Apple Translation build: %s\n" "$total" "$use_demo" "$use_live" "$drive_music" "${hide_after_seconds:-none}" "$(apple_translation_build_enabled && printf true || printf false)"
   echo "  ═══════════════════════════════════════════════════════════"
   echo ""
 
@@ -1170,7 +1237,7 @@ do_phased() {
   for entry in "${PHASED_TEMPLATES[@]}"; do
     IFS='|' read -r template duration desc <<< "$entry"
     printf "  [%d/%d] %s\n" "$i" "$total" "$desc"
-    if record_one "$template" "$duration" "$use_demo" "$use_live" "$scenario" "$drive_music"; then
+    if record_one "$template" "$duration" "$use_demo" "$use_live" "$scenario" "$drive_music" "$hide_after_seconds"; then
       passed=$((passed + 1))
     else
       failed=$((failed + 1))
@@ -1199,6 +1266,8 @@ do_sample() {
   local drive_music="false"
   local scenario
   scenario="$(parse_scenario "$@")"
+  local hide_after_seconds
+  hide_after_seconds="$(parse_hide_after "$@")"
   for arg in "$@"; do
     [[ "$arg" == "--demo" ]] && use_demo="true"
     [[ "$arg" == "--live" ]] && use_live="true"
@@ -1234,14 +1303,17 @@ do_sample() {
   elif [[ "$use_live" == "true" ]]; then
     launch_args+=("--live")
   fi
+  if [[ -n "$hide_after_seconds" ]]; then
+    launch_args+=("--hide-after=$hide_after_seconds")
+  fi
 
-  if [[ "$use_live" == "true" ]]; then
+  if [[ "$use_live" == "true" || -n "$hide_after_seconds" ]]; then
     ledger_live_log_path="$live_log_path"
     live_log_pid="$(start_live_log_capture "$live_log_path")"
     /bin/sleep 0.5
   fi
 
-  echo "  Direct sample: ${duration} | Demo: $use_demo | Live: $use_live | Drive Music: $drive_music | Apple Translation build: $(apple_translation_build_enabled && printf true || printf false)"
+  echo "  Direct sample: ${duration} | Demo: $use_demo | Live: $use_live | Drive Music: $drive_music | Hide after: ${hide_after_seconds:-none} | Apple Translation build: $(apple_translation_build_enabled && printf true || printf false)"
   "${launch_args[@]}" >/dev/null 2>&1 &
   usage_log_pid="$(start_usage_capture "$usage_log_path")"
   if [[ "$use_live" == "true" && "$drive_music" == "true" ]]; then
@@ -1257,16 +1329,23 @@ do_sample() {
     if ! verify_live_log "$live_log_path" "$drive_music"; then
       summarize_usage_capture "$usage_log_path" || true
       [[ "$drive_music" == "true" ]] && echo "  Music driver log: $driver_log_path"
-      append_run_ledger "$run_id" "sample" "$(mode_name "$use_demo" "$use_live")" "$scenario" "$duration" "" "failed" "false" "" "$usage_log_path" "$ledger_live_log_path" "live verification failed"
+      append_run_ledger "$run_id" "sample" "$(mode_name "$use_demo" "$use_live")" "$scenario" "$duration" "" "failed" "false" "" "$usage_log_path" "$ledger_live_log_path" "live verification failed" "$hide_after_seconds"
       return 1
     fi
     [[ "$drive_music" == "true" ]] && echo "  Music driver log: $driver_log_path"
   fi
+  if [[ -n "$hide_after_seconds" ]]; then
+    if ! verify_hide_after_log "$live_log_path"; then
+      summarize_usage_capture "$usage_log_path" || true
+      append_run_ledger "$run_id" "sample" "$(mode_name "$use_demo" "$use_live")" "$scenario" "$duration" "" "failed" "false" "" "$usage_log_path" "$ledger_live_log_path" "hide-after verification failed" "$hide_after_seconds"
+      return 1
+    fi
+  fi
   if ! summarize_usage_capture "$usage_log_path"; then
-    append_run_ledger "$run_id" "sample" "$(mode_name "$use_demo" "$use_live")" "$scenario" "$duration" "" "failed" "false" "" "$usage_log_path" "$ledger_live_log_path" "usage capture failed"
+    append_run_ledger "$run_id" "sample" "$(mode_name "$use_demo" "$use_live")" "$scenario" "$duration" "" "failed" "false" "" "$usage_log_path" "$ledger_live_log_path" "usage capture failed" "$hide_after_seconds"
     return 1
   fi
-  append_run_ledger "$run_id" "sample" "$(mode_name "$use_demo" "$use_live")" "$scenario" "$duration" "" "passed" "true" "" "$usage_log_path" "$ledger_live_log_path"
+  append_run_ledger "$run_id" "sample" "$(mode_name "$use_demo" "$use_live")" "$scenario" "$duration" "" "passed" "true" "" "$usage_log_path" "$ledger_live_log_path" "" "$hide_after_seconds"
   print_artifact_usage
 }
 

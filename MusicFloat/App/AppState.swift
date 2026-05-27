@@ -465,8 +465,9 @@ final class AppState {
         // Build an effective PlayerState that substitutes the high-frequency
         // tick value in for elapsedTime, so the overlay reflects smooth
         // playback while menu-observed fields stay stable.
+        let effectivePlaybackStatus = isOverlayVisible ? playerState.playbackStatus : .paused
         let effectiveState = PlayerState(
-            playbackStatus: playerState.playbackStatus,
+            playbackStatus: effectivePlaybackStatus,
             track: playerState.track,
             elapsedTime: effectiveElapsedTime,
             updatedAt: liveElapsedUpdatedAt
