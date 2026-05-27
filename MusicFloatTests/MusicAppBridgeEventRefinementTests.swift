@@ -218,6 +218,54 @@ final class MusicAppBridgeEventRefinementTests: XCTestCase {
         XCTAssertEqual(refined.state.elapsedTime, 82.5, accuracy: 0.001)
     }
 
+    func testMismatchedNewTrackEventDefersUntilSnapshotAgrees() {
+        let event = PlayerState(
+            playbackStatus: .playing,
+            track: Self.track(id: "track-new"),
+            elapsedTime: 0,
+            updatedAt: Date()
+        )
+
+        XCTAssertTrue(PublicAppleMusicAppBridge.shouldDeferPlayerInfoEvent(
+            event: event,
+            isNewTrackEvent: true,
+            hasMatchingSnapshot: false,
+            hasMismatchedSnapshot: true
+        ))
+    }
+
+    func testMismatchedSameTrackEventStillRefinesFromLocalClock() {
+        let event = PlayerState(
+            playbackStatus: .playing,
+            track: Self.track(id: "track-1"),
+            elapsedTime: 0,
+            updatedAt: Date()
+        )
+
+        XCTAssertFalse(PublicAppleMusicAppBridge.shouldDeferPlayerInfoEvent(
+            event: event,
+            isNewTrackEvent: false,
+            hasMatchingSnapshot: false,
+            hasMismatchedSnapshot: true
+        ))
+    }
+
+    func testNewTrackEventUsesMatchingSnapshotWhenAvailable() {
+        let event = PlayerState(
+            playbackStatus: .playing,
+            track: Self.track(id: "track-new"),
+            elapsedTime: 0,
+            updatedAt: Date()
+        )
+
+        XCTAssertFalse(PublicAppleMusicAppBridge.shouldDeferPlayerInfoEvent(
+            event: event,
+            isNewTrackEvent: true,
+            hasMatchingSnapshot: true,
+            hasMismatchedSnapshot: false
+        ))
+    }
+
     private static func track(id: String) -> NowPlayingTrack {
         NowPlayingTrack(
             id: id,
