@@ -357,6 +357,13 @@ final class AppleTranslationProvider: TranslationProvider {
         } catch is CancellationError {
             return .status(.unavailable(reason: "Translation cancelled"))
         } catch {
+            if Self.requiresLanguagePreparation(error) {
+                AppTelemetry.performance.notice(
+                    "Apple translation needs language preparation after translate failure source=\(normalizedSource, privacy: .public) target=\(normalizedTarget, privacy: .public)"
+                )
+                return .status(.needsDownload(source: normalizedSource, target: normalizedTarget))
+            }
+
             let reason = Self.failureMessage(for: error)
             AppTelemetry.performance.error("Apple translation failed: \(error.localizedDescription, privacy: .public)")
             return .status(.failed(reason))
@@ -405,6 +412,21 @@ final class AppleTranslationProvider: TranslationProvider {
             return "Translation failed"
         }
         return "Translation failed: \(detail)"
+    }
+
+    private static func requiresLanguagePreparation(_ error: any Error) -> Bool {
+        #if ENABLE_APPLE_TRANSLATION
+        if TranslationError.notInstalled ~= error {
+            return true
+        }
+
+        let nsError = error as NSError
+        return nsError.domain == "TranslationErrorDomain"
+            && nsError.code == 16
+        #else
+        _ = error
+        return false
+        #endif
     }
 
     private static func isLanguageSupportedByTranslation(

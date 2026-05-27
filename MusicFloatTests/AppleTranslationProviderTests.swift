@@ -1,5 +1,8 @@
 import XCTest
 @testable import MusicFloat
+#if ENABLE_APPLE_TRANSLATION
+@preconcurrency @unsafe import Translation
+#endif
 
 @MainActor
 final class AppleTranslationProviderTests: XCTestCase {
@@ -56,6 +59,36 @@ final class AppleTranslationProviderTests: XCTestCase {
 
         XCTAssertEqual(result, .status(.needsDownload(source: "en", target: "fr")))
         XCTAssertFalse(translated)
+    }
+
+    func testInstalledPairThatThrowsNotInstalledRequestsDownload() async {
+        #if ENABLE_APPLE_TRANSLATION
+        let provider = AppleTranslationProvider(dependencies: .init(
+            availability: { _, _ in .installed },
+            translate: { _, _, _ in throw TranslationError.notInstalled }
+        ))
+
+        let result = await provider.translation(for: document(), targetLanguageIdentifier: "fr")
+
+        XCTAssertEqual(result, .status(.needsDownload(source: "en", target: "fr")))
+        #endif
+    }
+
+    func testInstalledPairCode16DownloadFailureRequestsDownload() async {
+        let provider = AppleTranslationProvider(dependencies: .init(
+            availability: { _, _ in .installed },
+            translate: { _, _, _ in
+                throw NSError(
+                    domain: "TranslationErrorDomain",
+                    code: 16,
+                    userInfo: [NSLocalizedDescriptionKey: "Unable to Translate"]
+                )
+            }
+        ))
+
+        let result = await provider.translation(for: document(), targetLanguageIdentifier: "fr")
+
+        XCTAssertEqual(result, .status(.needsDownload(source: "en", target: "fr")))
     }
 
     func testUnsupportedPairReturnsStatus() async {
