@@ -115,7 +115,7 @@ struct LyricsOverlayView: View {
         .onChange(of: panelHeight) {
             onPresentationLayoutChanged()
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)) { _ in
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)) { _ in
             accessibilityDisplayOptions = .current
         }
     }
