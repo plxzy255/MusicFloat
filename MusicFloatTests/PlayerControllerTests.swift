@@ -114,27 +114,6 @@ final class PlayerControllerTests: XCTestCase {
     }
 
     @MainActor
-    func testLiveTickIntervalWakesForEndedLineInterlude() {
-        let document = LyricsDocument(
-            source: .appleMusicWeb,
-            lines: [
-                LyricLine(id: 0, text: "Current line", startTime: 0, endTime: 4),
-                LyricLine(id: 1, text: "Next line", startTime: 8, endTime: 12)
-            ],
-            isTimed: true
-        )
-
-        let interval = PlayerController.liveTickInterval(
-            currentElapsed: 3.8,
-            lyricsDocument: document,
-            lyricOffsetSeconds: 0,
-            duration: 120
-        )
-
-        XCTAssertEqual(interval, 0.45, accuracy: 0.0001)
-    }
-
-    @MainActor
     func testPreviewRefreshUsesTrackDurationForUntimedLyrics() {
         let controller = PlayerController(bridge: MockMusicAppBridge())
         let track = NowPlayingTrack(

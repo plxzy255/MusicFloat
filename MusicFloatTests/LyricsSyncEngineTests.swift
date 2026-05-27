@@ -34,75 +34,6 @@ final class LyricsSyncEngineTests: XCTestCase {
     }
 
     @MainActor
-    func testTimedDocumentUsesInterludeBeforeDelayedFirstLine() {
-        let document = LyricsDocument(
-            source: .appleMusicWeb,
-            lines: [
-                LyricLine(id: 0, text: "first", startTime: 5, endTime: 9),
-                LyricLine(id: 1, text: "second", startTime: 12, endTime: 15)
-            ],
-            isTimed: true
-        )
-
-        let position = LyricsSyncEngine().timelinePosition(in: document, at: 1, duration: 120)
-
-        XCTAssertNil(position.activeLine)
-        XCTAssertNil(position.previousLine)
-        XCTAssertEqual(position.nextLine?.id, 0)
-        XCTAssertTrue(position.isInterlude)
-    }
-
-    @MainActor
-    func testTimedDocumentUsesInterludeAfterEndedLine() {
-        let document = LyricsDocument(
-            source: .appleMusicWeb,
-            lines: [
-                LyricLine(id: 0, text: "first", startTime: 0, endTime: 4),
-                LyricLine(id: 1, text: "second", startTime: 8, endTime: 12)
-            ],
-            isTimed: true
-        )
-
-        let position = LyricsSyncEngine().timelinePosition(in: document, at: 5, duration: 120)
-
-        XCTAssertNil(position.activeLine)
-        XCTAssertEqual(position.previousLine?.id, 0)
-        XCTAssertEqual(position.nextLine?.id, 1)
-        XCTAssertTrue(position.isInterlude)
-    }
-
-    @MainActor
-    func testTimedDocumentDelaysOverlappingNextLineUntilPreviousEnd() {
-        let document = LyricsDocument(
-            source: .appleMusicWeb,
-            lines: [
-                LyricLine(id: 0, text: "first", startTime: 10, endTime: 12),
-                LyricLine(id: 1, text: "second", startTime: 11, endTime: 15)
-            ],
-            isTimed: true
-        )
-
-        XCTAssertEqual(LyricsSyncEngine().activeLine(in: document, at: 11.5)?.id, 0)
-        XCTAssertEqual(LyricsSyncEngine().activeLine(in: document, at: 12)?.id, 1)
-    }
-
-    @MainActor
-    func testTimedDocumentKeepsFinalLineAfterItsEndTime() {
-        let document = LyricsDocument(
-            source: .appleMusicWeb,
-            lines: [
-                LyricLine(id: 0, text: "final", startTime: 10, endTime: 12)
-            ],
-            isTimed: true
-        )
-
-        let position = LyricsSyncEngine().timelinePosition(in: document, at: 16, duration: 120)
-
-        XCTAssertEqual(position.activeLine?.id, 0)
-        XCTAssertFalse(position.isInterlude)
-    }
-
-    @MainActor
     func testUntimedDocumentReturnsFirstLine() {
         let document = LyricsDocument(
             source: .mock,
@@ -202,26 +133,6 @@ final class LyricsSyncEngineTests: XCTestCase {
         )
 
         XCTAssertEqual(LyricsSyncEngine().nextLineStart(in: document, after: 12, duration: 60), 20)
-    }
-
-    @MainActor
-    func testNextDisplayBoundaryReturnsInterludeBoundary() throws {
-        let document = LyricsDocument(
-            source: .appleMusicWeb,
-            lines: [
-                LyricLine(id: 0, text: "first", startTime: 0, endTime: 4),
-                LyricLine(id: 1, text: "second", startTime: 8, endTime: 12)
-            ],
-            isTimed: true
-        )
-
-        let boundary = try XCTUnwrap(LyricsSyncEngine().nextDisplayBoundary(in: document, after: 3.8))
-
-        XCTAssertEqual(
-            boundary,
-            4.25,
-            accuracy: 0.0001
-        )
     }
 
     @MainActor
