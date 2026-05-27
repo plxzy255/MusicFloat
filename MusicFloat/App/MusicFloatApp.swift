@@ -227,17 +227,27 @@ private final class MusicFloatAppController {
 
         if isShowing {
             appState.isOverlayVisible = true
-            if !appState.isLiveModeRunning {
+            if appState.isLiveModeRunning {
+                let liveProviderPipelineController = getLiveProviderPipelineController()
+                panelController.show(
+                    appState: appState,
+                    onTranslationPreparationCompleted: { [weak self] in self?.retryTranslationAfterPreparation() },
+                    playbackCommands: overlayPlaybackCommands
+                )
+                playerController.overlayVisibilityChanged(true, appState: appState)
+                liveProviderPipelineController.resumeVisibleLiveOverlayContent(appState: appState)
+                startLiveVisibleLyricsRefreshLoopIfNeeded(liveProviderPipelineController)
+            } else {
                 playerController.startMockPreview(appState: appState)
+                activeProviderPipelineController.prepareOverlayContent(appState: appState)
+                panelController.show(
+                    appState: appState,
+                    onTranslationPreparationCompleted: { [weak self] in self?.retryTranslationAfterPreparation() },
+                    playbackCommands: overlayPlaybackCommands
+                )
+                playerController.overlayVisibilityChanged(true, appState: appState)
+                startLiveVisibleLyricsRefreshLoopIfNeeded()
             }
-            activeProviderPipelineController.prepareOverlayContent(appState: appState)
-            panelController.show(
-                appState: appState,
-                onTranslationPreparationCompleted: { [weak self] in self?.retryTranslationAfterPreparation() },
-                playbackCommands: overlayPlaybackCommands
-            )
-            playerController.overlayVisibilityChanged(true, appState: appState)
-            startLiveVisibleLyricsRefreshLoopIfNeeded()
         } else {
             hideOverlayIfVisible(reason: "menu")
         }

@@ -18,6 +18,52 @@ final class PlayerControllerTests: XCTestCase {
     }
 
     @MainActor
+    func testHiddenLiveElapsedResumesFromWallClock() {
+        let defaults = UserDefaults(suiteName: "MusicFloatTests.liveWallClockResume.\(UUID().uuidString)")!
+        let appState = AppState(userDefaults: defaults)
+        appState.setLiveModeRunning(true)
+        let referenceDate = Date(timeIntervalSince1970: 1_000)
+        var snapshot = MockMusicAppBridge.previewState
+        snapshot.elapsedTime = 10
+        snapshot.updatedAt = referenceDate
+        appState.updatePlayerState(snapshot)
+
+        appState.resumeLiveElapsedTimeFromWallClock(
+            now: referenceDate.addingTimeInterval(15)
+        )
+
+        XCTAssertEqual(appState.effectiveElapsedTime, 25, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testHiddenLiveElapsedResumeClampsToTrackDuration() {
+        let defaults = UserDefaults(suiteName: "MusicFloatTests.liveWallClockResumeClamp.\(UUID().uuidString)")!
+        let appState = AppState(userDefaults: defaults)
+        appState.setLiveModeRunning(true)
+        let referenceDate = Date(timeIntervalSince1970: 1_000)
+        let track = NowPlayingTrack(
+            id: "short-track",
+            title: "Short",
+            artist: "MusicFloat",
+            album: "Tests",
+            duration: 20,
+            providerName: "Test"
+        )
+        appState.updatePlayerState(PlayerState(
+            playbackStatus: .playing,
+            track: track,
+            elapsedTime: 18,
+            updatedAt: referenceDate
+        ))
+
+        appState.resumeLiveElapsedTimeFromWallClock(
+            now: referenceDate.addingTimeInterval(15)
+        )
+
+        XCTAssertEqual(appState.effectiveElapsedTime, 20, accuracy: 0.001)
+    }
+
+    @MainActor
     func testLiveTickIntervalIgnoresSyllableBoundaries() {
         let document = LyricsDocument(
             source: .appleMusicWeb,
@@ -366,6 +412,42 @@ final class PlayerControllerTests: XCTestCase {
     }
 
     @MainActor
+    func testOverlayRevealRefreshesAuthoritativeLiveState() async throws {
+        let defaults = UserDefaults(suiteName: "MusicFloatTests.overlayRevealRefresh.\(UUID().uuidString)")!
+        let appState = AppState(userDefaults: defaults)
+        let initialState = PlayerState(
+            playbackStatus: .playing,
+            track: MockMusicAppBridge.previewTrack,
+            elapsedTime: 10,
+            updatedAt: Date()
+        )
+        let refreshedState = PlayerState(
+            playbackStatus: .playing,
+            track: MockMusicAppBridge.previewTrack,
+            elapsedTime: 45,
+            updatedAt: Date()
+        )
+        let bridge = RecordingMusicBridge(states: [initialState])
+        let controller = PlayerController(
+            bridge: MockMusicAppBridge(),
+            liveBridgeFactory: { bridge }
+        )
+
+        controller.startLiveAppleMusic(appState: appState)
+        await waitForCurrentStateCall(on: bridge)
+        appState.isOverlayVisible = false
+        controller.overlayVisibilityChanged(false, appState: appState)
+        bridge.states = [refreshedState, refreshedState]
+        appState.isOverlayVisible = true
+
+        controller.overlayVisibilityChanged(true, appState: appState)
+        try await waitUntil { appState.playerState.elapsedTime == 45 }
+
+        XCTAssertEqual(appState.playerState, refreshedState)
+        controller.stopLiveAppleMusic(appState: appState)
+    }
+
+    @MainActor
     private func waitForCurrentStateCall(on bridge: RecordingMusicBridge) async {
         for _ in 0..<20 {
             if bridge.currentStateCallCount > 0 {
@@ -374,6 +456,20 @@ final class PlayerControllerTests: XCTestCase {
             await Task.yield()
         }
         XCTFail("Timed out waiting for bridge.currentState() to be called")
+    }
+
+    private func waitUntil(
+        _ predicate: @MainActor @escaping () -> Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        for _ in 0..<50 {
+            if await predicate() {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTFail("Timed out waiting for condition", file: file, line: line)
     }
 }
 

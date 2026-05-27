@@ -158,6 +158,28 @@ final class ProviderPipelineController {
         refreshOverlayContent(appState: appState)
     }
 
+    func resumeVisibleLiveOverlayContent(appState: AppState) {
+        lastIntegratedVisibleLyricsRefresh = .distantPast
+        consecutiveIntegratedVisibleLyricsMisses = 0
+
+        guard appState.isOverlayVisible,
+              appState.isLiveModeRunning else {
+            return
+        }
+
+        if !appState.lyricsDocument.lines.isEmpty,
+           appState.lyricsDocument.source != .none {
+            if appState.providerRuntimeState == .idle {
+                appState.applyProviderReady()
+            }
+            refreshIntegratedVisibleLyrics(appState: appState)
+            AppTelemetry.performance.info("Live provider resume reused visible lyrics document")
+            return
+        }
+
+        refreshOverlayContentForLiveTrack(appState: appState)
+    }
+
     func cancelInFlightLoadPreservingState(appState: AppState) {
         guard loadTask != nil || translationTask != nil else { return }
         AppTelemetry.performance.info("Provider pipeline load cancelled because live track payload is empty")
@@ -356,6 +378,7 @@ final class ProviderPipelineController {
     func stopHiddenWork(appState: AppState) {
         axObserver.stop()
         observedAppState = nil
+        lastIntegratedVisibleLyricsRefresh = .distantPast
         consecutiveIntegratedVisibleLyricsMisses = 0
         cancelTranslationTask(appState: appState)
 

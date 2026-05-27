@@ -627,6 +627,29 @@ final class AppState {
         liveElapsedUpdatedAt = Date()
     }
 
+    /// When the overlay has been hidden, the live tick is stopped to avoid
+    /// wakeups. On reveal, advance once from wall-clock time so lyrics do not
+    /// resume from the stale hidden timestamp while the authoritative Music.app
+    /// snapshot is still being fetched.
+    func resumeLiveElapsedTimeFromWallClock(now: Date = Date()) {
+        guard playerState.playbackStatus == .playing,
+              playerState.track != nil,
+              liveElapsedUpdatedAt != .distantPast else {
+            return
+        }
+
+        let delta = now.timeIntervalSince(liveElapsedUpdatedAt)
+        guard delta.isFinite, delta > 0 else {
+            return
+        }
+
+        liveElapsedTime = MusicPlaybackCommand.clampedPlaybackPosition(
+            liveElapsedTime + delta,
+            duration: playerState.track?.duration
+        )
+        liveElapsedUpdatedAt = now
+    }
+
     func setProviderRuntimeState(_ state: ProviderRuntimeState) {
         providerRuntimeState = state
         AppTelemetry.performance.info("Provider runtime state set to \(state.displayName, privacy: .public)")
