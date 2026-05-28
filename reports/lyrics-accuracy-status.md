@@ -1,6 +1,6 @@
 # Live Lyrics Accuracy — Status & Next Steps
 
-Last updated: 2026-05-27
+Last updated: 2026-05-28
 
 Snapshot of where the live-lyrics pipeline stands after the active-line AX pass,
 Apple Music web-API integration, syllable-aware overlay progress, and the latest
@@ -45,6 +45,12 @@ The live-refresh tick in `ProviderPipelineController` recognizes the source of t
   persistent ID matches the notification track ID. When Music.app lags on the
   previous track, the resolver falls through to catalog search for the accepted
   notification track instead of querying the old catalog row.
+- **PR #26 driven run partially exercised the race**: live run
+  `20260528-130811Z-live-Direct-Sample-fe74b99` launched live mode, drove one
+  seek, two track changes, one watchdog seek detection, and one resync. It did
+  not prove lyrics readiness because all three privacy-safe lookups resolved via
+  catalog search to rows with no TTML, and the AX panel had no visible lyric
+  line during the sample.
 - **Plain Apple Music web docs stay sentence-first**: Apple Music web documents
   now skip AX replacement whether they are timed or plain. Timed TTML keeps the
   Apple clock; line-only/plain web lyrics keep equal estimated sentence windows
@@ -58,10 +64,10 @@ The live-refresh tick in `ProviderPipelineController` recognizes the source of t
 ## Known issues
 
 - **Seek / scrub long-run coverage**: the latest driven run proved the watchdog can detect seek jumps and resync the live clock, but it covered one session and line-timed Apple Music web lyrics. Keep this as a monitoring item for scrub-heavy manual use, syllable-heavy TTML, and tracks where Music's own highlight jumps differently from the web TTML timing.
-- **Lagged snapshot fix needs live confirmation**: the 2026-05-27 bridge fix
-  and catalog-ID guard are covered by unit tests and build validation, but they
-  have not yet been run through `--live --drive-music` or verified against a
-  manual skip in the user's active app session.
+- **Lagged snapshot fix still needs lyric-positive live confirmation**: the
+  2026-05-27 bridge fix and catalog-ID guard are covered by unit tests, build
+  validation, and the failed PR #26 driven run above. They still need a
+  lyric-positive live sample where Apple Music web returns TTML after a skip.
 - **Catalog ID resolution misses**: some tracks can still log `AM web: could not resolve catalog ID for track` and fall back to LRCLIB / AX. The resolver now scores `hasLyrics`, `hasTimeSyncedLyrics`, and `audioLocale`, and the web provider suppresses short-term repeated misses per track. Remaining root causes likely include:
   - AppleScript `URL of current track` is empty for some catalog playback paths (cloud library matches, Apple Music radio, queued recommendations).
   - The catalog-search fallback still only requests `types=songs`; matching may remain too strict for renamed/translated/explicit-tagged variants.
@@ -85,13 +91,16 @@ The live-refresh tick in `ProviderPipelineController` recognizes the source of t
 
 ## Next steps, ranked
 
-1. **Validate syllable progress in live driven runs** — the overlay now uses syllable timing, but it still needs driven evidence across seek/scrub and language-variant cases before we call the one-line lag solved.
-2. **Keep seek watchdog proof fresh** — repeat `--live --drive-music` when changing `PlayerController`, `PlaybackClock`, or `LyricsSyncEngine`, and compare `SEEK_DETECTED` / `Live tick resync` lines against the run ledger summary. The latest clean proof is `20260525-142048Z-live-Direct-Sample-52adb7a`.
-3. **Improve catalog ID resolution further** —
+1. **Repeat PR #26 live proof on a known lyric-positive track** — use a track
+   that currently shows Apple Music synced lyrics and `...` when applicable,
+   then verify the track-change path reaches `Lyrics hit ... source=appleMusicWeb`.
+2. **Validate syllable progress in live driven runs** — the overlay now uses syllable timing, but it still needs driven evidence across seek/scrub and language-variant cases before we call the one-line lag solved.
+3. **Keep seek watchdog proof fresh** — repeat `--live --drive-music` when changing `PlayerController`, `PlaybackClock`, or `LyricsSyncEngine`, and compare `SEEK_DETECTED` / `Live tick resync` lines against the run ledger summary. The latest clean proof is `20260525-142048Z-live-Direct-Sample-52adb7a`.
+4. **Improve catalog ID resolution further** —
    - Loosen search picker: accept duration ±3s by default and match on normalized-title containment when exact equality misses.
    - If AppleScript URL is missing, try `cloud universal id` from AppleScript and look up `/v1/catalog/{sf}/songs?filter[equivalents]={id}`.
-4. **Storefront language preference** — keep the original-language TTML default explicit. Add a visible setting only if live examples prove users need transliterated/localized lyrics.
-5. **Switch the AX fallback to a "translation only" role** — once the web path is reliable, the AX scrape is purely for AppleScript-library tracks that have no catalog ID. Could degrade gracefully without showing it at all when fallback is off.
+5. **Storefront language preference** — keep the original-language TTML default explicit. Add a visible setting only if live examples prove users need transliterated/localized lyrics.
+6. **Switch the AX fallback to a "translation only" role** — once the web path is reliable, the AX scrape is purely for AppleScript-library tracks that have no catalog ID. Could degrade gracefully without showing it at all when fallback is off.
 
 ## Parked
 
