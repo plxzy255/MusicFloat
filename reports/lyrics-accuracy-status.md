@@ -1,11 +1,14 @@
 # Live Lyrics Accuracy — Status & Next Steps
 
-Last updated: 2026-05-25
+Last updated: 2026-05-28
 
 Snapshot of where the live-lyrics pipeline stands after the active-line AX pass,
 Apple Music web-API integration, syllable-aware overlay progress, and the latest
-provider-cache hardening. Tracks what works, what doesn't, and the most useful
-next moves.
+provider-cache hardening. Tracks what works, what does not, and the most useful
+next moves. The current priority is evidence before more sync behavior changes:
+compare the Apple TTML document shape, effective lyric clock, and active index
+against what Apple Music and Dynamic Lyrics appear to show for the same
+user-driven track.
 
 ## Current pipeline
 
@@ -34,6 +37,23 @@ The live-refresh tick in `ProviderPipelineController` recognizes the source of t
 - **LRCLIB calibration**: when LRCLIB returns timed lyrics for a different master than the user is playing, the AX-driven calibration nudges the clock back into agreement using the overlay's effective live elapsed time rather than the sparse now-playing snapshot.
 - **Driven seek/track-change recovery**: live run `20260525-080546Z-live-Direct-Sample-28b81d4` launched `--live --drive-music`, loaded a non-mock Apple Music web document (`line_count=64`), detected a +15s seek via the watchdog, resynced the live clock, handled a next-track event, and detected a later seek correction. The run had `network_timeout_count=0`.
 - **Clean driven live recovery evidence**: snapshot run `20260525-142048Z-live-Direct-Sample-52adb7a` repeated the driven path from a clean temporary worktree. It proved Music.app playback, overlay appearance, provider readiness, one watchdog seek, one resync, one track change, and Apple Music web lyrics after the track change (`line_count=50`, `syllable_count=0`). The live log also showed a line-only Apple Music web path (`timed=false`); visual proof that the overlay never shows fake word-fill still needs a screenshot, video, or UI snapshot.
+- **Lagged AppleScript snapshots no longer block track changes**: 2026-05-27
+  manual logs showed correct `com.apple.Music.playerInfo` track-change events
+  arriving while the AppleScript snapshot still reported the previous track.
+  The event bridge now retries briefly, ignores snapshots whose track identity
+  disagrees with the notification, and accepts the notification track rather
+  than leaving lyrics, translation, and artwork attached to the old track.
+- **Catalog URL shortcut validates track identity**: the Apple Music web
+  resolver no longer trusts `URL of current track` unless AppleScript's
+  persistent ID matches the notification track ID. When Music.app lags on the
+  previous track, the resolver falls through to catalog search for the accepted
+  notification track instead of querying the old catalog row.
+- **PR #26 driven run partially exercised the race**: live run
+  `20260528-130811Z-live-Direct-Sample-fe74b99` launched live mode, drove one
+  seek, two track changes, one watchdog seek detection, and one resync. It did
+  not prove lyrics readiness because all three privacy-safe lookups resolved via
+  catalog search to rows with no TTML, and the AX panel had no visible lyric
+  line during the sample.
 - **Plain Apple Music web docs stay sentence-first**: Apple Music web documents
   now skip AX replacement whether they are timed or plain. Timed TTML keeps the
   Apple clock; line-only/plain web lyrics keep equal estimated sentence windows
@@ -47,6 +67,10 @@ The live-refresh tick in `ProviderPipelineController` recognizes the source of t
 ## Known issues
 
 - **Seek / scrub long-run coverage**: the latest driven run proved the watchdog can detect seek jumps and resync the live clock, but it covered one session and line-timed Apple Music web lyrics. Keep this as a monitoring item for scrub-heavy manual use, syllable-heavy TTML, and tracks where Music's own highlight jumps differently from the web TTML timing.
+- **Lagged snapshot fix still needs lyric-positive live confirmation**: the
+  2026-05-27 bridge fix and catalog-ID guard are covered by unit tests, build
+  validation, and the failed PR #26 driven run above. They still need a
+  lyric-positive live sample where Apple Music web returns TTML after a skip.
 - **Catalog ID resolution misses**: some tracks can still log `AM web: could not resolve catalog ID for track` and fall back to LRCLIB / AX. The resolver now scores `hasLyrics`, `hasTimeSyncedLyrics`, and `audioLocale`, and the web provider suppresses short-term repeated misses per track. Remaining root causes likely include:
   - AppleScript `URL of current track` is empty for some catalog playback paths (cloud library matches, Apple Music radio, queued recommendations).
   - The catalog-search fallback still only requests `types=songs`; matching may remain too strict for renamed/translated/explicit-tagged variants.
@@ -57,6 +81,13 @@ The live-refresh tick in `ProviderPipelineController` recognizes the source of t
   reduce account-language transliteration surprises, but needs live examples
   before calling the language issue closed.
 - **One-line lag on some songs**: even with the TTML doc loaded, the overlay sometimes shows the line just *before* the actual highlight for a beat. Could be the TTML having silent intro padding (some Apple TTML uses `<p begin="00:00.001">` on first vocal but Music's scroll engine doesn't start moving until a few hundred ms later).
+- **Lead-in / interlude evidence gap**: Apple Music and Dynamic Lyrics appear
+  to display `...` around lead-in and interlude gaps, but we do not yet have
+  enough local evidence to turn that into a display rule. The app now logs
+  privacy-safe timing summaries (`first_start_ms`, `leading_gap_ms`,
+  `max_gap_ms`, `long_gap_count`, `overlap_count`, `active_index`, and
+  `effective_ms`) whenever a document is applied. Use those logs to prove where
+  the TTML has a real gap before adding display-only `...` rows.
 - **Untimed estimate is not true sync**: plain lyrics now move line by line in equal estimated slots, but without provider timing this is still duration-based. It should feel calmer than word-fill, not perfectly match the artist's phrasing.
 - **Plain Apple document completeness**: once Apple Music web returns any
   document, the overlay preserves it instead of replacing it with AX. If a
@@ -70,13 +101,21 @@ The live-refresh tick in `ProviderPipelineController` recognizes the source of t
 
 ## Next steps, ranked
 
-1. **Validate syllable progress in live driven runs** — the overlay now uses syllable timing, but it still needs driven evidence across seek/scrub and language-variant cases before we call the one-line lag solved.
-2. **Keep seek watchdog proof fresh** — repeat `--live --drive-music` when changing `PlayerController`, `PlaybackClock`, or `LyricsSyncEngine`, and compare `SEEK_DETECTED` / `Live tick resync` lines against the run ledger summary. The latest clean proof is `20260525-142048Z-live-Direct-Sample-52adb7a`.
-3. **Improve catalog ID resolution further** —
+1. **Repeat PR #26 live proof on a known lyric-positive track** — use a track
+   that currently shows Apple Music synced lyrics and `...` when applicable,
+   then verify the track-change path reaches `Lyrics hit ... source=appleMusicWeb`.
+2. **Collect timing-shape evidence for the current mismatch** — with the same
+   track visible in Apple Music, capture `cv.MusicFloat` performance logs around
+   document application and compare the timing summary against the observed
+   Apple Music/Dynamic Lyrics line. This should answer whether the mismatch is
+   provider timing, elapsed-clock drift, line selection, or display policy.
+3. **Validate syllable progress in live driven runs** — the overlay now uses syllable timing, but it still needs driven evidence across seek/scrub and language-variant cases before we call the one-line lag solved.
+4. **Keep seek watchdog proof fresh** — repeat `--live --drive-music` when changing `PlayerController`, `PlaybackClock`, or `LyricsSyncEngine`, and compare `SEEK_DETECTED` / `Live tick resync` lines against the run ledger summary. The latest clean proof is `20260525-142048Z-live-Direct-Sample-52adb7a`.
+5. **Improve catalog ID resolution further** —
    - Loosen search picker: accept duration ±3s by default and match on normalized-title containment when exact equality misses.
    - If AppleScript URL is missing, try `cloud universal id` from AppleScript and look up `/v1/catalog/{sf}/songs?filter[equivalents]={id}`.
-4. **Storefront language preference** — keep the original-language TTML default explicit. Add a visible setting only if live examples prove users need transliterated/localized lyrics.
-5. **Switch the AX fallback to a "translation only" role** — once the web path is reliable, the AX scrape is purely for AppleScript-library tracks that have no catalog ID. Could degrade gracefully without showing it at all when fallback is off.
+6. **Storefront language preference** — keep the original-language TTML default explicit. Add a visible setting only if live examples prove users need transliterated/localized lyrics.
+7. **Switch the AX fallback to a "translation only" role** — once the web path is reliable, the AX scrape is purely for AppleScript-library tracks that have no catalog ID. Could degrade gracefully without showing it at all when fallback is off.
 
 ## Parked
 
@@ -93,3 +132,8 @@ Located in `.tmp/`, not committed:
 - `YouLyPlus` — runs inside the Music web player so it gets the token for free; surfaced the cleaner `/songs/{id}/syllable-lyrics?extend=ttmlLocalizations` endpoint and `hasLyrics` skip heuristic.
 - `LyricFever` — uses LRCLIB / NetEase / Spotify only; doesn't touch the Apple Music web API.
 - `applemusic-like-lyrics` — frontend monorepo; not relevant to the auth/fetch path.
+- Dynamic Lyrics binary/interface inspection — not source code and not
+  committed, but useful as a product-shape clue: it appears to keep Apple TTML,
+  provider fallback, per-track/global offset, server-side fix lists, and
+  playback/artwork state in separate layers. Treat that as direction for future
+  experiments, not as proof for a forced MusicFloat display patch.

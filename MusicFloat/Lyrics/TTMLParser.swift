@@ -9,6 +9,8 @@ import Foundation
 ///
 /// Time values come in any of: `HH:MM:SS.mmm`, `MM:SS.mmm`, `SS.mmm`, `Ns`.
 nonisolated enum TTMLParser {
+    static let emptyTimedParagraphText = "..."
+
     static func parse(ttml: String, source: LyricsSource = .appleMusicWeb) -> LyricsDocument? {
         AppTelemetry.measure("TTMLParser.parse") {
             parseImpl(ttml: ttml, source: source)
@@ -149,6 +151,15 @@ nonisolated enum TTMLParser {
                         syllables: pSpans
                     ))
                     nextID += 1
+                } else if shouldPreserveEmptyTimedParagraph {
+                    lines.append(LyricLine(
+                        id: nextID,
+                        text: TTMLParser.emptyTimedParagraphText,
+                        startTime: pBegin,
+                        endTime: pEnd,
+                        syllables: []
+                    ))
+                    nextID += 1
                 }
                 inP = false
                 pBegin = nil
@@ -158,6 +169,16 @@ nonisolated enum TTMLParser {
             default:
                 break
             }
+        }
+
+        private var shouldPreserveEmptyTimedParagraph: Bool {
+            guard pSpans.isEmpty,
+                  let pBegin,
+                  let pEnd,
+                  pEnd > pBegin else {
+                return false
+            }
+            return true
         }
 
         private func appendSpanText() {

@@ -218,6 +218,62 @@ final class MusicAppBridgeEventRefinementTests: XCTestCase {
         XCTAssertEqual(refined.state.elapsedTime, 82.5, accuracy: 0.001)
     }
 
+    func testMismatchedNewTrackEventUsesEventWithoutStaleSnapshot() {
+        let now = Date()
+        let previous = PlayerState(
+            playbackStatus: .playing,
+            track: Self.track(id: "track-old"),
+            elapsedTime: 42,
+            updatedAt: now.addingTimeInterval(-1)
+        )
+        let event = PlayerState(
+            playbackStatus: .playing,
+            track: Self.track(id: "track-new"),
+            elapsedTime: 0,
+            updatedAt: now
+        )
+
+        let refined = PublicAppleMusicAppBridge.refinePlayerInfoEvent(
+            event: event,
+            lastEmittedState: previous,
+            lastEmittedAt: now.addingTimeInterval(-1),
+            snapshot: nil,
+            now: now
+        )
+
+        XCTAssertEqual(refined.state.track?.id, "track-new")
+        XCTAssertEqual(refined.state.elapsedTime, 0)
+        XCTAssertFalse(refined.refineSucceeded)
+    }
+
+    func testNewTrackEventUsesMatchingSnapshotWhenAvailable() {
+        let now = Date()
+        let event = PlayerState(
+            playbackStatus: .playing,
+            track: Self.track(id: "track-new"),
+            elapsedTime: 0,
+            updatedAt: now
+        )
+        let snapshot = PlayerState(
+            playbackStatus: .playing,
+            track: Self.track(id: "track-new"),
+            elapsedTime: 12,
+            updatedAt: now
+        )
+
+        let refined = PublicAppleMusicAppBridge.refinePlayerInfoEvent(
+            event: event,
+            lastEmittedState: nil,
+            lastEmittedAt: now,
+            snapshot: snapshot,
+            now: now
+        )
+
+        XCTAssertEqual(refined.state.track?.id, "track-new")
+        XCTAssertEqual(refined.state.elapsedTime, 12)
+        XCTAssertTrue(refined.refineSucceeded)
+    }
+
     private static func track(id: String) -> NowPlayingTrack {
         NowPlayingTrack(
             id: id,

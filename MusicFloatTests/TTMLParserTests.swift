@@ -38,6 +38,70 @@ final class TTMLParserTests: XCTestCase {
     }
 
     @MainActor
+    func testPreservesEmptyTimedParagraphAsGapPlaceholder() {
+        let ttml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <tt>
+          <body>
+            <div>
+              <p begin="00:00.000" end="00:05.000"></p>
+              <p begin="00:05.000" end="00:08.000">First vocal line</p>
+            </div>
+          </body>
+        </tt>
+        """
+
+        let document = TTMLParser.parse(ttml: ttml)
+
+        XCTAssertEqual(document?.lines.count, 2)
+        XCTAssertEqual(document?.lines[0].text, "...")
+        XCTAssertEqual(document?.lines[0].startTime, 0)
+        XCTAssertEqual(document?.lines[0].endTime, 5)
+        XCTAssertEqual(document?.lines[0].syllables, [])
+        XCTAssertEqual(document?.lines[1].text, "First vocal line")
+    }
+
+    @MainActor
+    func testSkipsUntimedEmptyParagraphs() {
+        let ttml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <tt>
+          <body>
+            <div>
+              <p></p>
+              <p begin="00:05.000" end="00:08.000">First vocal line</p>
+            </div>
+          </body>
+        </tt>
+        """
+
+        let document = TTMLParser.parse(ttml: ttml)
+
+        XCTAssertEqual(document?.lines.count, 1)
+        XCTAssertEqual(document?.lines[0].text, "First vocal line")
+    }
+
+    @MainActor
+    func testSkipsZeroDurationEmptyTimedParagraphs() {
+        let ttml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <tt>
+          <body>
+            <div>
+              <p begin="00:05.000" end="00:05.000"></p>
+              <p begin="00:05.000" end="00:08.000">First vocal line</p>
+            </div>
+          </body>
+        </tt>
+        """
+
+        let document = TTMLParser.parse(ttml: ttml)
+
+        XCTAssertEqual(document?.lines.count, 1)
+        XCTAssertEqual(document?.lines[0].text, "First vocal line")
+    }
+
+    @MainActor
     func testWordTimedSpansInferReadableSpaces() {
         let ttml = """
         <?xml version="1.0" encoding="UTF-8"?>
