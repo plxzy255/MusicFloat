@@ -657,11 +657,14 @@ final class AppState {
 
     func applyLyricsDocument(_ document: LyricsDocument) {
         lyricsDocument = document
-        let syllableCount = document.lines.reduce(0) { total, line in
-            total + line.syllables.count
-        }
+        let timingSummary = LyricsTimingDiagnostics.summary(
+            for: document,
+            elapsedTime: effectiveElapsedTime,
+            duration: playerState.track?.duration,
+            lyricOffsetSeconds: effectiveLyricOffsetSeconds
+        )
         AppTelemetry.performance.info(
-            "Lyrics document applied source=\(document.source.rawValue, privacy: .public) timed=\(document.isTimed) line_count=\(document.lines.count) syllable_count=\(syllableCount)"
+            "Lyrics document applied source=\(timingSummary.source.rawValue, privacy: .public) timed=\(timingSummary.isTimed) line_count=\(timingSummary.lineCount) timed_line_count=\(timingSummary.timedLineCount) line_end_count=\(timingSummary.lineEndCount) syllable_count=\(timingSummary.syllableCount) active_index=\(timingSummary.activeLineIndex ?? -1) effective_ms=\(timingSummary.effectiveLyricTimeMilliseconds ?? -1) first_start_ms=\(timingSummary.firstLineStartMilliseconds ?? -1) last_start_ms=\(timingSummary.lastLineStartMilliseconds ?? -1) max_gap_ms=\(timingSummary.maxInterlineGapMilliseconds ?? -1) long_gap_count=\(timingSummary.longInterlineGapCount) leading_gap_ms=\(timingSummary.leadingGapMilliseconds ?? -1) overlap_count=\(timingSummary.overlapCount) offset_ms=\(timingSummary.offsetCorrectionMilliseconds)"
         )
     }
 
